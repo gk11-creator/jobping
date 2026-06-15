@@ -197,4 +197,13 @@ async def run_pipeline(subscribers: list[dict]) -> list[dict]:
         ]
 
         matched_jobs = await score_jobs(user_profile, all_jobs, top_n=10)
-        ...
+
+        results.append({
+            "email": subscriber.get("email"),
+            "name": subscriber.get("name"),
+            "user_profile": user_profile,
+            "matched_jobs": matched_jobs,
+        })
+        print(f"완료: {len(matched_jobs)}개 공고 매칭")
+
+    return results

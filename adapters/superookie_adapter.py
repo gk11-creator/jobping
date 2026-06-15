@@ -1,30 +1,33 @@
 """
-슈퍼루키 어댑터 - HTML 직접 파싱 방식
+슈퍼루키 어댑터 - /jobs/search URL 기반
 """
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from adapters.base_adapter import BaseAdapter
 
-CATEGORY_MAP = {
-    "IT개발 > 서버/백엔드": "백엔드",
-    "IT개발 > 프론트엔드": "프론트엔드",
-    "IT개발 > 풀스택": "풀스택",
-    "IT개발 > AI/ML": "AI",
-    "IT개발 > 데이터분석": "데이터",
-    "IT개발 > DevOps": "DevOps",
-    "IT개발 > iOS": "iOS",
-    "IT개발 > 안드로이드": "Android",
-    "IT개발 > QA": "QA",
-    "IT개발 > 보안": "보안",
-    "기획/전략": "기획",
-    "마케팅/광고": "마케팅",
-    "디자인": "디자인",
+DUTY_GROUP_MAP = {
+    "IT개발 > 프론트엔드": ["661de91a8b129f42ef6c257c"],
+    "IT개발 > 서버/백엔드": ["661de91a8b129f42ef6c257b"],
+    "IT개발 > 데이터분석": ["661de91a8b129f42ef6c257d"],
+    "IT개발 > AI/ML": ["661de91a8b129f42ef6c2581"],
+    "IT개발 > iOS": ["661de91a8b129f42ef6c2583"],
+    "IT개발 > 안드로이드": ["661de91a8b129f42ef6c2582"],
+    "IT개발 > DevOps": ["661de91a8b129f42ef6c2580"],
+    "IT개발 > QA": ["661de91a8b129f42ef6c257a"],
+    "IT 전 직군": [
+        "661de91a8b129f42ef6c257a", "661de91a8b129f42ef6c257b",
+        "661de91a8b129f42ef6c257c", "661de91a8b129f42ef6c257d",
+        "661de91a8b129f42ef6c257e", "661de91a8b129f42ef6c257f",
+        "661de91a8b129f42ef6c2580", "661de91a8b129f42ef6c2581",
+        "661de91a8b129f42ef6c2582", "661de91a8b129f42ef6c2583",
+    ],
 }
 
+JOB_LEVEL_INTERN = "579f18168b129f673b4efebe"
 BASE_URL = "https://www.superookie.com"
-LIST_URL = f"{BASE_URL}/list/intern"
+SEARCH_URL = f"{BASE_URL}/jobs/search"
 
 
 class SuperookieAdapter(BaseAdapter):
@@ -32,8 +35,8 @@ class SuperookieAdapter(BaseAdapter):
     async def _refresh_session(self):
         print("[슈퍼루키] 세션 재획득 중...")
         try:
-            await self.page.goto(LIST_URL, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(3)
+            await self.page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(2)
         except Exception as e:
             print(f"[슈퍼루키] 세션 재획득 실패: {e}")
         self._session_valid = True
@@ -43,17 +46,23 @@ class SuperookieAdapter(BaseAdapter):
         if not self._session_valid:
             await self._refresh_session()
 
-        keyword = CATEGORY_MAP.get(user_profile.get("category", ""), "")
-        search_url = f"{LIST_URL}?q={keyword}&page={page}" if keyword else f"{LIST_URL}?page={page}"
+        duty_groups = DUTY_GROUP_MAP.get(
+            user_profile.get("category", ""),
+            DUTY_GROUP_MAP["IT 전 직군"]
+        )
 
-        print(f"[슈퍼루키] 접속: {search_url}")
+        params = f"q=&sort=&status=&job_level%5B%5D={JOB_LEVEL_INTERN}&job_type=job"
+        for dg in duty_groups:
+            params += f"&duty_group%5B%5D={dg}"
+
+        url = f"{SEARCH_URL}?{params}"
+        print(f"[슈퍼루키] 접속: {url[:80]}...")
+
         try:
-            await self.page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(3)
-
-            # 스크롤해서 더 많은 공고 로드
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            await asyncio.sleep(8)
             await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
         except Exception as e:
             print(f"[슈퍼루키] 페이지 이동 실패: {e}")
             return []
@@ -74,76 +83,47 @@ class SuperookieAdapter(BaseAdapter):
         soup = BeautifulSoup(html, "html.parser")
         jobs = []
 
-        # 셀렉터 1: .job-card 또는 .activity-card
-        items = (
-            soup.select(".job-card") or
-            soup.select(".activity-card") or
-            soup.select(".intern-card") or
-            soup.select("li.item") or
-            soup.select(".list-item") or
-            soup.select("article.job") or
-            soup.select(".card-item")
-        )
-
+        items = soup.select(".item-job")
         print(f"[슈퍼루키] 아이템 {len(items)}개 발견")
 
         for item in items:
-            try:
-                # 제목
-                title_tag = (
-                    item.select_one("h3") or
-                    item.select_one("h2") or
-                    item.select_one(".title") or
-                    item.select_one(".job-title") or
-                    item.select_one("a.name") or
-                    item.select_one("strong")
-                )
-                if not title_tag:
-                    continue
-                title = title_tag.get_text(strip=True)
-                if not title or len(title) < 2:
-                    continue
+                    try:
+                        # 링크
+                        link_tag = item.select_one("a.job-detail-link")
+                        if not link_tag:
+                            continue
+                        href = link_tag.get("href", "")
+                        source_url = href if href.startswith("http") else f"{BASE_URL}{href}"
 
-                # 링크
-                link_tag = item.select_one("a[href]") or item.find_parent("a")
-                href = link_tag.get("href", "") if link_tag else ""
-                source_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+                        # 제목
+                        title_tag = item.select_one(".job-title")
+                        title = title_tag.get_text(strip=True) if title_tag else ""
+                        if not title:
+                            continue
 
-                # 회사명
-                company_tag = (
-                    item.select_one(".company") or
-                    item.select_one(".corp-name") or
-                    item.select_one(".organization") or
-                    item.select_one("p.company")
-                )
-                company = company_tag.get_text(strip=True) if company_tag else ""
+                        # 회사명
+                        company_tag = item.select_one("h5")
+                        company = company_tag.get_text(strip=True) if company_tag else ""
 
-                # 마감일
-                deadline_tag = (
-                    item.select_one(".deadline") or
-                    item.select_one(".date") or
-                    item.select_one("time")
-                )
-                deadline_raw = deadline_tag.get_text(strip=True) if deadline_tag else ""
-                deadline = self._parse_deadline(deadline_raw)
+                        # 마감일
+                        deadline_tag = item.select_one(".color-gray.mobile-text-12")
+                        deadline_raw = deadline_tag.get_text(strip=True) if deadline_tag else ""
 
-                if title:
-                    jobs.append({
-                        "title": title,
-                        "company": company,
-                        "category": user_profile.get("category", ""),
-                        "employment_type": "인턴",
-                        "location": user_profile.get("location", "서울"),
-                        "deadline": deadline,
-                        "source": "슈퍼루키",
-                        "source_url": source_url or LIST_URL,
-                        "rating": None,
-                        "competition_ratio": None,
-                        "_raw": {"deadline_raw": deadline_raw}
-                    })
-            except Exception as e:
-                print(f"[슈퍼루키] 파싱 오류: {e}")
-
+                        jobs.append({
+                            "title": title,
+                            "company": company,
+                            "category": user_profile.get("category", ""),
+                            "employment_type": "인턴",
+                            "location": user_profile.get("location", "서울"),
+                            "deadline": self._parse_deadline(deadline_raw),
+                            "source": "슈퍼루키",
+                            "source_url": source_url,
+                            "rating": None,
+                            "competition_ratio": None,
+                            "_raw": {"deadline_raw": deadline_raw}
+                        })
+                    except Exception as e:
+                        print(f"[슈퍼루키] 파싱 오류: {e}")
         return jobs
 
     def _parse_deadline(self, raw: str) -> Optional[str]:
@@ -160,6 +140,5 @@ class SuperookieAdapter(BaseAdapter):
             return f"{year}-{month:02d}-{day:02d}"
         m3 = re.search(r"D-(\d+)", raw)
         if m3:
-            from datetime import timedelta
             return (today + timedelta(days=int(m3.group(1)))).strftime("%Y-%m-%d")
         return None

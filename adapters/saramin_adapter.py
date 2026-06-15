@@ -79,25 +79,31 @@ class SaraminAdapter(BaseAdapter):
         soup = BeautifulSoup(html, "html.parser")
         jobs = []
 
-        # 방법 1: 일반 공고 리스트
-        for item in soup.select("div.item_recruit"):
+        items = soup.select(".list_item")
+        print(f"[사람인] 아이템 {len(items)}개 발견")
+
+        for item in items:
             try:
-                title_tag = item.select_one("a.str_tit") or item.select_one(".job_tit a")
+                # 제목
+                title_tag = item.select_one(".job_tit .str_tit")
                 if not title_tag:
                     continue
                 title = title_tag.get_text(strip=True)
+                if not title:
+                    continue
+
+                # URL + rec_idx
                 href = title_tag.get("href", "")
-                rec_idx = re.search(r"rec_idx=(\d+)", href)
-                rec_idx = rec_idx.group(1) if rec_idx else None
+                rec_idx_match = re.search(r"rec_idx=(\d+)", href)
+                rec_idx = rec_idx_match.group(1) if rec_idx_match else None
                 source_url = f"{BASE_URL}{href}" if href.startswith("/") else href
 
-                company_tag = item.select_one(".corp_name a") or item.select_one(".company_name")
+                # 회사명
+                company_tag = item.select_one(".company_nm .str_tit")
                 company = company_tag.get_text(strip=True) if company_tag else ""
 
-                loc_tag = item.select_one(".work_place") or item.select_one(".job_condition span")
-                location = loc_tag.get_text(strip=True) if loc_tag else user_profile.get("location", "")
-
-                deadline_tag = item.select_one(".job_date .date") or item.select_one(".deadline")
+                # 마감일
+                deadline_tag = item.select_one(".job_date .date") or item.select_one(".date")
                 deadline_raw = deadline_tag.get_text(strip=True) if deadline_tag else ""
 
                 if title:
@@ -106,51 +112,16 @@ class SaraminAdapter(BaseAdapter):
                         "company": company,
                         "category": user_profile.get("category", ""),
                         "employment_type": user_profile.get("employment_type", "인턴"),
-                        "location": location,
+                        "location": user_profile.get("location", "서울"),
                         "deadline": self._parse_deadline(deadline_raw),
                         "source": "사람인",
-                        "source_url": source_url if source_url else f"{BASE_URL}/zf_user/jobs/relay/view?rec_idx={rec_idx}",
+                        "source_url": source_url,
                         "rating": None,
                         "competition_ratio": None,
                         "_raw": {"rec_idx": rec_idx, "deadline_raw": deadline_raw}
                     })
             except Exception as e:
                 print(f"[사람인] 파싱 오류: {e}")
-
-        # 방법 2: 결과 없으면 다른 셀렉터 시도
-        if not jobs:
-            for item in soup.select("li.list"):
-                try:
-                    title_tag = item.select_one("a")
-                    if not title_tag:
-                        continue
-                    title = title_tag.get_text(strip=True)
-                    href = title_tag.get("href", "")
-                    rec_idx = re.search(r"rec_idx=(\d+)", href)
-                    rec_idx = rec_idx.group(1) if rec_idx else None
-
-                    company_tag = item.select_one(".corp_name") or item.select_one(".company")
-                    company = company_tag.get_text(strip=True) if company_tag else ""
-
-                    deadline_tag = item.select_one(".date")
-                    deadline_raw = deadline_tag.get_text(strip=True) if deadline_tag else ""
-
-                    if title and rec_idx:
-                        jobs.append({
-                            "title": title,
-                            "company": company,
-                            "category": user_profile.get("category", ""),
-                            "employment_type": user_profile.get("employment_type", "인턴"),
-                            "location": user_profile.get("location", "서울"),
-                            "deadline": self._parse_deadline(deadline_raw),
-                            "source": "사람인",
-                            "source_url": f"{BASE_URL}/zf_user/jobs/relay/view?rec_idx={rec_idx}",
-                            "rating": None,
-                            "competition_ratio": None,
-                            "_raw": {"rec_idx": rec_idx, "deadline_raw": deadline_raw}
-                        })
-                except Exception as e:
-                    print(f"[사람인] 파싱2 오류: {e}")
 
         return jobs
 

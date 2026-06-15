@@ -10,12 +10,12 @@ from datetime import datetime
 from typing import Optional
 
 from adapters.base_adapter import BaseAdapter
-from adapters.saramin_adapter import SaraminAdapter
+# from adapters.saramin_adapter import SaraminAdapter
 from adapters.jobkorea_adapter import JobKoreaAdapter
 from adapters.linkareer_adapter import LinkareerAdapter
-from adapters.incruit_adapter import IncruitAdapter
+# from adapters.incruit_adapter import IncruitAdapter
 from adapters.superookie_adapter import SuperookieAdapter
-from adapters.jobplanet_adapter import JobplanetAdapter
+# from adapters.jobplanet_adapter import JobplanetAdapter
 
 class Orchestrator:
     def __init__(self, headless: bool = True):
@@ -36,12 +36,9 @@ class Orchestrator:
 
     async def run(self, user_profile: dict, max_pages: int = 3) -> list[dict]:
         adapters = [
-            SaraminAdapter(),
             JobKoreaAdapter(),
             LinkareerAdapter(),
-            IncruitAdapter(),
             SuperookieAdapter(),
-            JobplanetAdapter(),
         ]
 
         print(f"[오케스트레이터] 수집 시작 — {len(adapters)}개 사이트")
@@ -64,20 +61,6 @@ class Orchestrator:
 
         print(f"[오케스트레이터] 중복 제거 후: {len(all_jobs)}개")
         return all_jobs
-
-    def _deduplicate(self, jobs: list[dict]) -> list[dict]:
-        seen = {}
-        for job in jobs:
-            key = (
-                job.get("company", "").strip().lower(),
-                job.get("title", "").strip().lower()[:30]
-            )
-            if key not in seen:
-                seen[key] = job
-            else:
-                if job.get("rating") and not seen[key].get("rating"):
-                    seen[key] = job
-        return list(seen.values())
 
     def _sort(self, jobs: list[dict]) -> list[dict]:
         today = datetime.now().date()

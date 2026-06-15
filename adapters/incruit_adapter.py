@@ -1,5 +1,5 @@
 """
-인크루트 어댑터 - URL 및 셀렉터 개선
+인크루트 어댑터
 """
 import asyncio
 import re
@@ -18,8 +18,10 @@ OCC_MAP = {
     "IT개발 > DevOps": {"occ1": 150, "occ2": 160},
     "IT개발 > 보안": {"occ1": 150, "occ2": 163},
     "IT개발 > QA": {"occ1": 150, "occ2": 164},
-    "기획/전략": {"occ1": 2}, "마케팅/광고": {"occ1": 7},
-    "디자인": {"occ1": 104}, "영업": {"occ1": 5},
+    "기획/전략": {"occ1": 2},
+    "마케팅/광고": {"occ1": 7},
+    "디자인": {"occ1": 104},
+    "영업": {"occ1": 5},
 }
 REGION_MAP = {
     "서울": 11, "경기": 12, "인천": 13, "부산": 21, "대구": 22,
@@ -28,6 +30,13 @@ REGION_MAP = {
     "충남": 45, "충북": 46, "제주": 51, "해외": 61,
 }
 ETYPE_MAP = {"정규직": 1, "계약직": 2, "인턴": 3, "파견직": 4, "아르바이트": 5}
+
+SKIP_KEYWORDS = [
+    "교육", "훈련", "과정", "수료", "강의", "캠퍼스", "아카데미", "부트캠프", "국비",
+    "장애인", "협력단", "공무직", "공제", "체육회", "협력단", "재단", "공단",
+    "신입사원 공개채용", "수시채용"
+]
+
 BASE_URL = "https://job.incruit.com"
 SEARCH_URL = f"{BASE_URL}/jobdb_list/searchjob.asp"
 
@@ -58,7 +67,7 @@ class IncruitAdapter(BaseAdapter):
             "etype": etype,
             "pno": page,
             "col": 1,
-            "sortby": 2,  # 최신순
+            "sortby": 2,
         }
         if "occ2" in occ:
             params["occ2"] = occ["occ2"]
@@ -69,7 +78,7 @@ class IncruitAdapter(BaseAdapter):
 
         try:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(10)
         except Exception as e:
             print(f"[인크루트] 페이지 이동 실패: {e}")
             return []
@@ -80,8 +89,7 @@ class IncruitAdapter(BaseAdapter):
             print(f"[인크루트] 콘텐츠 추출 실패: {e}")
             return []
 
-        # 차단 감지
-        if "captcha" in html.lower() or "로봇" in html:
+        if "recaptcha" in html.lower() and "로봇" in html:
             print("[인크루트] 차단 감지")
             return []
 
@@ -95,65 +103,30 @@ class IncruitAdapter(BaseAdapter):
         soup = BeautifulSoup(html, "html.parser")
         jobs = []
 
-        # 셀렉터 1: div.cell_list
-        items = soup.select("div.cell_list")
-
-        # 셀렉터 2: ul.list_jobs li
-        if not items:
-            items = soup.select("ul.list_jobs li")
-
-        # 셀렉터 3: div.job_list_wrap .item
-        if not items:
-            items = soup.select("div.job_list_wrap .item")
-
-        # 셀렉터 4: .recruit_list li
-        if not items:
-            items = soup.select(".recruit_list li")
-
+        items = soup.select(".cPrdlists_box_pos")
         print(f"[인크루트] 아이템 {len(items)}개 발견")
 
         for item in items:
             try:
-                # 제목 찾기
-                title_tag = (
-                    item.select_one("a.tit") or
-                    item.select_one(".job_tit a") or
-                    item.select_one("a.job_title") or
-                    item.select_one("strong.title a") or
-                    item.select_one("a[href*='jobdbno']")
-                )
+                title_tag = item.select_one(".cTitle strong")
                 if not title_tag:
                     continue
                 title = title_tag.get_text(strip=True)
                 if not title:
                     continue
 
-                href = title_tag.get("href", "")
+                # 교육/훈련 과정 필터링
+                if any(kw in title for kw in SKIP_KEYWORDS):
+                    continue
+
+                link_tag = item.select_one("a[href*='jobpost.asp']")
+                href = link_tag.get("href", "") if link_tag else ""
                 source_url = href if href.startswith("http") else f"{BASE_URL}{href}"
 
-                # 회사명
-                company_tag = (
-                    item.select_one("a.name") or
-                    item.select_one(".corp_name a") or
-                    item.select_one(".company_name") or
-                    item.select_one("span.corp")
-                )
+                company_tag = item.select_one(".cCpName")
                 company = company_tag.get_text(strip=True) if company_tag else ""
 
-                # 지역
-                location = user_profile.get("location", "서울")
-                for tag in item.select("span"):
-                    text = tag.get_text(strip=True)
-                    if re.search(r"(서울|경기|인천|부산|대구|광주|대전|울산|강원|제주|전국)", text):
-                        location = text
-                        break
-
-                # 마감일
-                deadline_tag = (
-                    item.select_one("span.date") or
-                    item.select_one(".deadline") or
-                    item.select_one(".date_info")
-                )
+                deadline_tag = item.select_one(".cDate")
                 deadline_raw = deadline_tag.get_text(strip=True) if deadline_tag else ""
 
                 jobs.append({
@@ -161,7 +134,7 @@ class IncruitAdapter(BaseAdapter):
                     "company": company,
                     "category": user_profile.get("category", ""),
                     "employment_type": user_profile.get("employment_type", "인턴"),
-                    "location": location,
+                    "location": user_profile.get("location", "서울"),
                     "deadline": self._parse_deadline(deadline_raw),
                     "source": "인크루트",
                     "source_url": source_url,
@@ -178,6 +151,8 @@ class IncruitAdapter(BaseAdapter):
         today = datetime.now()
         if not raw or "상시" in raw:
             return None
+        if "오늘마감" in raw:
+            return today.strftime("%Y-%m-%d")
         m = re.search(r"(\d{2,4})[./](\d{2})[./](\d{2})", raw)
         if m:
             y = m.group(1)
