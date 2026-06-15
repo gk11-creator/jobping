@@ -15,8 +15,7 @@ urllib3.disable_warnings()
 client = AsyncOpenAI()
 resend.api_key = os.environ.get("RESEND_API_KEY")
 SENDER = os.environ.get("RESEND_SENDER", "onboarding@resend.dev")
-SAVE_API_URL = os.environ.get("SAVE_API_URL", "http://localhost:8000/save")
-
+SAVE_API_URL = os.environ.get("SAVE_API_URL", "https://jobping-xuwa.onrender.com")
 
 async def generate_email(result: dict) -> dict:
     name = result.get("name", "")
@@ -29,7 +28,7 @@ async def generate_email(result: dict) -> dict:
     return _fallback_template(name, matched_jobs, user_profile)
 
 
-def _job_card(job: dict, index: int, hidden: bool = False) -> str:
+def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", name: str = "") -> str:
     deadline = job.get("deadline") or "상시채용"
     source = job.get("source", "")
     source_url = job.get("source_url", "#")
@@ -71,6 +70,9 @@ def _job_card(job: dict, index: int, hidden: bool = False) -> str:
 
     display_style = 'display:none;' if hidden else ''
 
+    import urllib.parse
+    save_link = f"{save_url}/save?user={urllib.parse.quote(name)}&title={urllib.parse.quote(title)}&company={urllib.parse.quote(company)}&url={urllib.parse.quote(source_url)}&deadline={deadline}"
+
     return f"""
     <div id="{job_id}" style="{display_style}border:1px solid #e5e7eb;border-radius:10px;padding:18px;margin:10px 0;background:#fff;">
 
@@ -83,7 +85,7 @@ def _job_card(job: dict, index: int, hidden: bool = False) -> str:
 
       <!-- 제목 + D-day -->
       <div style="margin-bottom:6px;">
-        <a href="{source_url}" style="font-size:15px;font-weight:700;color:#111;text-decoration:none;line-height:1.4; ;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+        <a href="{source_url}" style="font-size:15px;font-weight:700;color:#111;text-decoration:none;line-height:1.4;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
           {title}
         </a>
         {dday_text}
@@ -109,7 +111,7 @@ def _job_card(job: dict, index: int, hidden: bool = False) -> str:
           </td>
           <td width="4%"></td>
           <td width="48%" style="padding-left:4px;">
-            <a href="{source_url}"
+            <a href="{save_link}"
                style="display:block;text-align:center;padding:10px 0;
                       background:#fff;color:#2563eb;border-radius:8px;
                       font-size:13px;font-weight:600;text-decoration:none;
@@ -135,7 +137,7 @@ def _fallback_template(name: str, jobs: list, user_profile: dict) -> dict:
 
     all_jobs = jobs[:8]
 
-    visible_cards = "".join(_job_card(job, i, hidden=False) for i, job in enumerate(all_jobs))
+    visible_cards = "".join(_job_card(job, i, hidden=False, save_url=SAVE_API_URL, name=name) for i, job in enumerate(all_jobs))
     hidden_cards = ""
     more_button = ""
 
