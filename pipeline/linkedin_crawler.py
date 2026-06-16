@@ -219,34 +219,44 @@ class LinkedInCrawler:
             soup = BeautifulSoup(html, "html.parser")
 
             for email in emails:
-                # mailto 링크로 이메일 태그 찾기
                 mailto_tag = soup.find("a", href=f"mailto:{email}")
                 if not mailto_tag:
                     continue
 
-                # 댓글 컨테이너 찾기 (상위 div)
-                container = mailto_tag.find_parent("div", class_=lambda c: c and "_33635b67" in c)
-                if not container:
-                    container = mailto_tag.find_parent("div")
-
-                # 프로필 URL 찾기 (컨테이너 안의 /in/ 링크)
+                # 상위로 올라가면서 /in/ 링크 찾기
                 profile_url = None
                 name = ""
-                if container:
-                    profile_link = container.find("a", href=lambda h: h and "/in/" in h and "linkedin.com" in h)
-                    if not profile_link:
-                        # 더 넓게 탐색
-                        profile_link = container.find_parent().find("a", href=lambda h: h and "/in/" in h)
-                    if profile_link:
-                        href = profile_link.get("href", "")
-                        profile_url = href.split("?")[0]
-                        if not profile_url.startswith("http"):
-                            profile_url = f"{BASE_URL}{profile_url}"
 
-                    # 이름 찾기
-                    name_tag = container.find("span", attrs={"aria-hidden": "true"})
-                    if name_tag:
-                        name = name_tag.get_text(strip=True).split("•")[0].strip()
+                # 충분히 넓게 탐색
+                parent = mailto_tag
+                for _ in range(10):
+                    parent = parent.find_parent()
+                    if not parent:
+                        break
+
+                    # 프로필 링크 찾기
+                    if not profile_url:
+                        profile_link = parent.find("a", href=lambda h: h and "/in/" in h and "linkedin.com" in h)
+                        if profile_link:
+                            href = profile_link.get("href", "")
+                            profile_url = href.split("?")[0]
+                            if not profile_url.startswith("http"):
+                                profile_url = f"{BASE_URL}{profile_url}"
+
+                    # 이름 찾기 - aria-label에서 추출
+                    if not name and profile_url:
+                        profile_fig = parent.find("figure", attrs={"aria-hidden": None})
+                        if not profile_fig:
+                            # aria-label에서 이름 추출
+                            for tag in parent.find_all(attrs={"aria-label": True}):
+                                label = tag.get("aria-label", "")
+                                if "님의 프로필" in label:
+                                    name = label.replace("님의 프로필 보기", "").replace(",", "").strip()
+                                    name = name.split("구직중")[0].strip()
+                                    break
+
+                    if profile_url and name:
+                        break
 
                 comments.append({
                     "email": email,
@@ -261,6 +271,7 @@ class LinkedInCrawler:
             print(f"[LinkedIn] 매핑 오류: {e}")
 
         return comments
+    
     async def crawl_profile(self, profile_url: str) -> dict:
         print(f"[LinkedIn] 프로필 크롤링: {profile_url}")
         await self.page.goto(profile_url, wait_until="domcontentloaded")

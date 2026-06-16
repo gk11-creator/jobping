@@ -4,6 +4,7 @@
 import asyncio
 import json
 import os
+import urllib.parse
 from datetime import datetime
 from openai import AsyncOpenAI
 import resend
@@ -16,6 +17,7 @@ client = AsyncOpenAI()
 resend.api_key = os.environ.get("RESEND_API_KEY")
 SENDER = os.environ.get("RESEND_SENDER", "onboarding@resend.dev")
 SAVE_API_URL = os.environ.get("SAVE_API_URL", "https://jobping-xuwa.onrender.com")
+
 
 async def generate_email(result: dict) -> dict:
     name = result.get("name", "")
@@ -37,7 +39,6 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
     location = job.get("location", "")
     job_id = f"job_{index}"
 
-    # 출처 사이트 색상
     source_colors = {
         "잡코리아": "#e8f0fe;color:#1a73e8",
         "링커리어": "#e6f4ea;color:#188038",
@@ -49,7 +50,6 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
     }
     source_style = source_colors.get(source, "#f1f3f4;color:#5f6368")
 
-    # D-day 계산
     dday_text = ""
     if job.get("deadline"):
         try:
@@ -70,7 +70,7 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
 
     display_style = 'display:none;' if hidden else ''
 
-    import urllib.parse
+    track_link = f"{save_url}/track?user={urllib.parse.quote(name)}&title={urllib.parse.quote(title)}&company={urllib.parse.quote(company)}&url={urllib.parse.quote(source_url)}&deadline={deadline}"
     save_link = f"{save_url}/save?user={urllib.parse.quote(name)}&title={urllib.parse.quote(title)}&company={urllib.parse.quote(company)}&url={urllib.parse.quote(source_url)}&deadline={deadline}"
 
     return f"""
@@ -85,7 +85,7 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
 
       <!-- 제목 + D-day -->
       <div style="margin-bottom:6px;">
-        <a href="{source_url}" style="font-size:15px;font-weight:700;color:#111;text-decoration:none;line-height:1.4;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+        <a href="{track_link}" style="font-size:15px;font-weight:700;color:#111;text-decoration:none;line-height:1.4;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
           {title}
         </a>
         {dday_text}
@@ -102,7 +102,7 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
         <tr>
           <td width="48%" style="padding-right:4px;">
-            <a href="{source_url}"
+            <a href="{track_link}"
                style="display:block;text-align:center;padding:10px 0;
                       background:#2563eb;color:#fff;border-radius:8px;
                       font-size:13px;font-weight:600;text-decoration:none;">
@@ -125,8 +125,8 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
     </div>
     """
 
+
 def _fallback_template(name: str, jobs: list, user_profile: dict) -> dict:
-    # 마감 지난 공고 제거
     from datetime import date, datetime
     today = date.today()
     jobs = [
@@ -138,8 +138,6 @@ def _fallback_template(name: str, jobs: list, user_profile: dict) -> dict:
     all_jobs = jobs[:8]
 
     visible_cards = "".join(_job_card(job, i, hidden=False, save_url=SAVE_API_URL, name=name) for i, job in enumerate(all_jobs))
-    hidden_cards = ""
-    more_button = ""
 
     html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -168,7 +166,7 @@ def _fallback_template(name: str, jobs: list, user_profile: dict) -> dict:
 
     <!-- 저장된 공고 보기 -->
     <div style="padding:0 24px 24px;">
-      <a href="{SAVE_API_URL}/saved?user={name}"
+      <a href="{SAVE_API_URL}/saved?user={urllib.parse.quote(name)}"
          style="display:block;text-align:center;padding:12px;
                 background:#f9fafb;color:#374151;border:1px solid #e5e7eb;
                 border-radius:8px;font-size:14px;font-weight:600;text-decoration:none;">
@@ -190,6 +188,7 @@ def _fallback_template(name: str, jobs: list, user_profile: dict) -> dict:
         "html": html,
         "preview_text": f"{user_profile.get('category')} 공고 {len(all_jobs)}개가 도착했어요",
     }
+
 
 def send_email(to_email: str, subject: str, html: str) -> bool:
     try:
@@ -278,67 +277,12 @@ async def preview(matched_results_path: str = "data/matched_results.json"):
                     "title": "백엔드 개발 인턴",
                     "company": "카카오",
                     "location": "서울",
-                    "deadline": "2026-06-15",
+                    "deadline": "2026-07-15",
                     "source": "잡플래닛",
                     "source_url": "https://jobplanet.co.kr",
                     "rating": 4.2,
                     "match_score": 92,
-                    "match_reason": "Python/FastAPI 스킬이 백엔드 포지션과 직접 일치하며, IU 인포매틱스 전공이 서비스 개발 업무에 적합"
-                },
-                {
-                    "title": "프론트엔드 개발 인턴",
-                    "company": "네이버",
-                    "location": "서울",
-                    "deadline": "2026-06-20",
-                    "source": "링커리어",
-                    "source_url": "https://linkareer.com",
-                    "rating": 4.5,
-                    "match_score": 88,
-                    "match_reason": "React 경험이 프론트엔드 포지션과 일치"
-                },
-                {
-                    "title": "데이터 분석 인턴",
-                    "company": "카카오페이",
-                    "location": "서울",
-                    "deadline": "2026-06-25",
-                    "source": "사람인",
-                    "source_url": "https://saramin.co.kr",
-                    "rating": None,
-                    "match_score": 85,
-                    "match_reason": "데이터 분석 경험이 포지션과 일치"
-                },
-                {
-                    "title": "AI 엔지니어 인턴",
-                    "company": "뤼튼",
-                    "location": "서울",
-                    "deadline": "2026-07-01",
-                    "source": "잡코리아",
-                    "source_url": "https://jobkorea.co.kr",
-                    "rating": None,
-                    "match_score": 82,
-                    "match_reason": "AI 관심사와 포지션 일치"
-                },
-                {
-                    "title": "풀스택 개발 인턴",
-                    "company": "토스",
-                    "location": "서울",
-                    "deadline": "2026-07-05",
-                    "source": "링커리어",
-                    "source_url": "https://linkareer.com",
-                    "rating": 4.8,
-                    "match_score": 80,
-                    "match_reason": "풀스택 경험과 포지션 일치"
-                },
-                {
-                    "title": "DevOps 인턴",
-                    "company": "쿠팡",
-                    "location": "서울",
-                    "deadline": "2026-07-10",
-                    "source": "잡코리아",
-                    "source_url": "https://jobkorea.co.kr",
-                    "rating": None,
-                    "match_score": 78,
-                    "match_reason": "인프라 관심사와 포지션 일치"
+                    "match_reason": "Python/FastAPI 스킬이 백엔드 포지션과 직접 일치"
                 },
             ]
         }]
