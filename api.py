@@ -198,8 +198,14 @@ async def stats():
     clicks = await get_rows("clicks")
     saved = await get_rows("saved_jobs")
 
+    # 리스트인지 확인
+    if not isinstance(clicks, list):
+        clicks = []
+    if not isinstance(saved, list):
+        saved = []
+
     from collections import Counter
-    click_counts = Counter(c.get("title", "") for c in clicks)
+    click_counts = Counter(c.get("title", "") for c in clicks if isinstance(c, dict))
     top_clicks = click_counts.most_common(10)
 
     rows = "".join(
