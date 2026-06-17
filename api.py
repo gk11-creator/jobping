@@ -31,6 +31,16 @@ def supabase_headers():
         "Content-Type": "application/json",
     }
 
+def clean_user(user: str) -> str:
+    """user 파라미터를 항상 디코딩된 평문으로 정규화"""
+    if not user:
+        return ""
+    try:
+        decoded = urllib.parse.unquote(user)
+    except Exception:
+        decoded = user
+    return decoded.strip()
+
 async def insert_row(table: str, data: dict):
     async with httpx.AsyncClient() as client:
         res = await client.post(
@@ -41,7 +51,10 @@ async def insert_row(table: str, data: dict):
         return res
 
 async def get_rows(table: str, filters: dict = {}):
-    params = "&".join(f"{k}=eq.{v}" for k, v in filters.items())
+    parts = []
+    for k, v in filters.items():
+        parts.append(f"{k}=eq.{urllib.parse.quote(v)}")
+    params = "&".join(parts)
     url = f"{SUPABASE_URL}/rest/v1/{table}?{params}&order=saved_at.desc" if filters else f"{SUPABASE_URL}/rest/v1/{table}?order=saved_at.desc"
     async with httpx.AsyncClient() as client:
         res = await client.get(url, headers=supabase_headers())
@@ -68,7 +81,7 @@ async def track_click(
     deadline: str = Query(""),
 ):
     await insert_row("clicks", {
-        "user_name": user,
+        "user_name": clean_user(user),
         "title": urllib.parse.unquote(title),
         "company": urllib.parse.unquote(company),
         "url": urllib.parse.unquote(url),
@@ -88,23 +101,59 @@ async def save_job(
     url: str = Query(""),
     deadline: str = Query(""),
 ):
+    clean_name = clean_user(user)
+    decoded_url = urllib.parse.unquote(url)
+
     async with httpx.AsyncClient() as client:
         check = await client.get(
-            f"{SUPABASE_URL}/rest/v1/saved_jobs?user_name=eq.{user}&url=eq.{urllib.parse.quote(urllib.parse.unquote(url))}",
+            f"{SUPABASE_URL}/rest/v1/saved_jobs?user_name=eq.{urllib.parse.quote(clean_name)}&url=eq.{urllib.parse.quote(decoded_url)}",
             headers=supabase_headers()
         )
         existing = check.json()
 
     if not existing:
         await insert_row("saved_jobs", {
-            "user_name": user,
+            "user_name": clean_name,
             "title": urllib.parse.unquote(title),
             "company": urllib.parse.unquote(company),
-            "url": urllib.parse.unquote(url),
+            "url": decoded_url,
             "deadline": deadline,
         })
 
-    return RedirectResponse(url=f"/saved?user={user}")
+    return RedirectResponse(url=f"/saved?user={urllib.parse.quote(clean_name)}")
+
+
+# ─────────────────────────────────────────
+# 공고 좋아요
+# ─────────────────────────────────────────
+@app.get("/like")
+async def like_job(
+    user: str = Query(""),
+    title: str = Query(""),
+    company: str = Query(""),
+    url: str = Query(""),
+    deadline: str = Query(""),
+):
+    clean_name = clean_user(user)
+    decoded_url = urllib.parse.unquote(url)
+
+    async with httpx.AsyncClient() as client:
+        check = await client.get(
+            f"{SUPABASE_URL}/rest/v1/likes?user_name=eq.{urllib.parse.quote(clean_name)}&url=eq.{urllib.parse.quote(decoded_url)}",
+            headers=supabase_headers()
+        )
+        existing = check.json()
+
+    if not existing:
+        await insert_row("likes", {
+            "user_name": clean_name,
+            "title": urllib.parse.unquote(title),
+            "company": urllib.parse.unquote(company),
+            "url": decoded_url,
+            "deadline": deadline,
+        })
+
+    return RedirectResponse(url=decoded_url)
 
 
 # ─────────────────────────────────────────
@@ -117,7 +166,7 @@ async def delete_job(
 ):
     if id:
         await delete_row("saved_jobs", id)
-    return RedirectResponse(url=f"/saved?user={urllib.parse.quote(user)}")
+    return RedirectResponse(url=f"/saved?user={urllib.parse.quote(clean_user(user))}")
 
 
 # ─────────────────────────────────────────
@@ -125,8 +174,9 @@ async def delete_job(
 # ─────────────────────────────────────────
 @app.get("/saved", response_class=HTMLResponse)
 async def saved_jobs(user: str = Query("")):
-    if user:
-        jobs = await get_rows("saved_jobs", {"user_name": user})
+    clean_name = clean_user(user)
+    if clean_name:
+        jobs = await get_rows("saved_jobs", {"user_name": clean_name})
     else:
         jobs = await get_rows("saved_jobs")
 
@@ -168,7 +218,7 @@ async def saved_jobs(user: str = Query("")):
     for job in jobs:
         badge = dday_badge(job.get("deadline", ""))
         job_id = job.get("id", "")
-        delete_link = f"/delete?id={job_id}&user={urllib.parse.quote(user)}"
+        delete_link = f"/delete?id={job_id}&user={urllib.parse.quote(clean_name)}"
         cards += f"""
         <div style="border:1px solid #e5e7eb;border-radius:10px;padding:18px;margin:10px 0;background:#fff;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;">
@@ -210,7 +260,7 @@ async def saved_jobs(user: str = Query("")):
     <div style="background:#2563eb;padding:24px;text-align:center;">
       <h1 style="color:#fff;font-size:20px;font-weight:700;margin:0;">📋 저장된 공고</h1>
       <p style="color:#bfdbfe;font-size:13px;margin:6px 0 0;">
-        {f"{user}님의 저장 목록 · {len(jobs)}개" if user else f"전체 {len(jobs)}개"}
+        {f"{clean_name}님의 저장 목록 · {len(jobs)}개" if clean_name else f"전체 {len(jobs)}개"}
       </p>
     </div>
     <div style="padding:20px;">
@@ -223,42 +273,67 @@ async def saved_jobs(user: str = Query("")):
 
 
 # ─────────────────────────────────────────
-# 클릭 통계
+# 클릭 / 좋아요 / 저장 통계
 # ─────────────────────────────────────────
 @app.get("/stats", response_class=HTMLResponse)
 async def stats():
     clicks = await get_rows("clicks")
     saved = await get_rows("saved_jobs")
+    likes = await get_rows("likes")
 
     if not isinstance(clicks, list):
         clicks = []
     if not isinstance(saved, list):
         saved = []
+    if not isinstance(likes, list):
+        likes = []
 
     from collections import Counter
     click_counts = Counter(c.get("title", "") for c in clicks if isinstance(c, dict))
     top_clicks = click_counts.most_common(10)
 
-    rows = "".join(
+    like_counts = Counter(l.get("title", "") for l in likes if isinstance(l, dict))
+    top_likes = like_counts.most_common(10)
+
+    click_rows = "".join(
         f"<tr><td style='padding:8px;border-bottom:1px solid #e5e7eb;'>{title}</td>"
         f"<td style='padding:8px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:600;color:#2563eb;'>{count}</td></tr>"
         for title, count in top_clicks
     )
 
+    like_rows = "".join(
+        f"<tr><td style='padding:8px;border-bottom:1px solid #e5e7eb;'>{title}</td>"
+        f"<td style='padding:8px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:600;color:#ef4444;'>{count}</td></tr>"
+        for title, count in top_likes
+    )
+
     html = f"""<!DOCTYPE html>
 <html lang="ko">
-<head><meta charset="UTF-8"><title>클릭 통계</title></head>
+<head><meta charset="UTF-8"><title>통계</title></head>
 <body style="font-family:-apple-system,sans-serif;max-width:700px;margin:40px auto;padding:0 20px;">
-  <h1 style="font-size:22px;font-weight:700;">📊 클릭 통계</h1>
-  <p style="color:#6b7280;">총 클릭: <strong>{len(clicks)}</strong>회 · 저장된 공고: <strong>{len(saved)}</strong>개</p>
-  <table style="width:100%;border-collapse:collapse;margin-top:20px;">
+  <h1 style="font-size:22px;font-weight:700;">📊 통계</h1>
+  <p style="color:#6b7280;">총 클릭: <strong>{len(clicks)}</strong>회 · 저장: <strong>{len(saved)}</strong>개 · 좋아요: <strong>{len(likes)}</strong>개</p>
+
+  <h2 style="font-size:16px;font-weight:700;margin-top:30px;">🔗 클릭 Top 10</h2>
+  <table style="width:100%;border-collapse:collapse;margin-top:10px;">
     <thead>
       <tr style="background:#f9fafb;">
         <th style="padding:10px;text-align:left;border-bottom:2px solid #e5e7eb;">공고명</th>
         <th style="padding:10px;text-align:center;border-bottom:2px solid #e5e7eb;">클릭수</th>
       </tr>
     </thead>
-    <tbody>{rows}</tbody>
+    <tbody>{click_rows}</tbody>
+  </table>
+
+  <h2 style="font-size:16px;font-weight:700;margin-top:30px;">❤️ 좋아요 Top 10</h2>
+  <table style="width:100%;border-collapse:collapse;margin-top:10px;">
+    <thead>
+      <tr style="background:#f9fafb;">
+        <th style="padding:10px;text-align:left;border-bottom:2px solid #e5e7eb;">공고명</th>
+        <th style="padding:10px;text-align:center;border-bottom:2px solid #e5e7eb;">좋아요수</th>
+      </tr>
+    </thead>
+    <tbody>{like_rows}</tbody>
   </table>
 </body></html>"""
 
