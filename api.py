@@ -47,6 +47,14 @@ async def get_rows(table: str, filters: dict = {}):
         res = await client.get(url, headers=supabase_headers())
         return res.json()
 
+async def delete_row(table: str, row_id):
+    async with httpx.AsyncClient() as client:
+        res = await client.delete(
+            f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{row_id}",
+            headers=supabase_headers()
+        )
+        return res
+
 
 # ─────────────────────────────────────────
 # 클릭 추적 + 리다이렉트
@@ -80,7 +88,6 @@ async def save_job(
     url: str = Query(""),
     deadline: str = Query(""),
 ):
-    # 중복 체크
     async with httpx.AsyncClient() as client:
         check = await client.get(
             f"{SUPABASE_URL}/rest/v1/saved_jobs?user_name=eq.{user}&url=eq.{urllib.parse.quote(urllib.parse.unquote(url))}",
@@ -101,6 +108,19 @@ async def save_job(
 
 
 # ─────────────────────────────────────────
+# 저장된 공고 삭제
+# ─────────────────────────────────────────
+@app.get("/delete")
+async def delete_job(
+    id: str = Query(""),
+    user: str = Query(""),
+):
+    if id:
+        await delete_row("saved_jobs", id)
+    return RedirectResponse(url=f"/saved?user={urllib.parse.quote(user)}")
+
+
+# ─────────────────────────────────────────
 # 저장된 공고 보기
 # ─────────────────────────────────────────
 @app.get("/saved", response_class=HTMLResponse)
@@ -110,7 +130,9 @@ async def saved_jobs(user: str = Query("")):
     else:
         jobs = await get_rows("saved_jobs")
 
-    # 마감 임박 순 정렬
+    if not isinstance(jobs, list):
+        jobs = []
+
     today = date.today()
 
     def sort_key(job):
@@ -145,6 +167,8 @@ async def saved_jobs(user: str = Query("")):
     cards = ""
     for job in jobs:
         badge = dday_badge(job.get("deadline", ""))
+        job_id = job.get("id", "")
+        delete_link = f"/delete?id={job_id}&user={urllib.parse.quote(user)}"
         cards += f"""
         <div style="border:1px solid #e5e7eb;border-radius:10px;padding:18px;margin:10px 0;background:#fff;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px;">
@@ -157,8 +181,16 @@ async def saved_jobs(user: str = Query("")):
           <div style="color:#6b7280;font-size:13px;margin-bottom:4px;">
             {job.get('company','')}
           </div>
-          <div style="color:#9ca3af;font-size:11px;">
-            저장일: {job.get('saved_at','')[:10] if job.get('saved_at') else ''}
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+            <div style="color:#9ca3af;font-size:11px;">
+              저장일: {job.get('saved_at','')[:10] if job.get('saved_at') else ''}
+            </div>
+            <a href="{delete_link}"
+               onclick="return confirm('이 공고를 삭제하시겠습니까?');"
+               style="font-size:12px;color:#ef4444;text-decoration:none;font-weight:600;
+                      padding:4px 10px;border:1px solid #fecaca;border-radius:6px;background:#fef2f2;">
+              🗑 삭제
+            </a>
           </div>
         </div>
         """
@@ -198,7 +230,6 @@ async def stats():
     clicks = await get_rows("clicks")
     saved = await get_rows("saved_jobs")
 
-    # 리스트인지 확인
     if not isinstance(clicks, list):
         clicks = []
     if not isinstance(saved, list):
