@@ -70,8 +70,14 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
 
     display_style = 'display:none;' if hidden else ''
 
-    track_link = f"{save_url}/track?user={urllib.parse.quote(name)}&title={urllib.parse.quote(title)}&company={urllib.parse.quote(company)}&url={urllib.parse.quote(source_url)}&deadline={deadline}"
-    save_link = f"{save_url}/save?user={urllib.parse.quote(name)}&title={urllib.parse.quote(title)}&company={urllib.parse.quote(company)}&url={urllib.parse.quote(source_url)}&deadline={deadline}"
+    encoded_name = urllib.parse.quote(name)
+    encoded_title = urllib.parse.quote(title)
+    encoded_company = urllib.parse.quote(company)
+    encoded_url = urllib.parse.quote(source_url)
+
+    track_link = f"{save_url}/track?user={encoded_name}&title={encoded_title}&company={encoded_company}&url={encoded_url}&deadline={deadline}"
+    save_link = f"{save_url}/save?user={encoded_name}&title={encoded_title}&company={encoded_company}&url={encoded_url}&deadline={deadline}"
+    like_link = f"{save_url}/like?user={encoded_name}&title={encoded_title}&company={encoded_company}&url={encoded_url}&deadline={deadline}"
 
     return f"""
     <div id="{job_id}" style="{display_style}border:1px solid #e5e7eb;border-radius:10px;padding:18px;margin:10px 0;background:#fff;">
@@ -101,7 +107,7 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
       <!-- 버튼 -->
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
         <tr>
-          <td width="48%" style="padding-right:4px;">
+          <td width="36%" style="padding-right:3px;">
             <a href="{track_link}"
                style="display:block;text-align:center;padding:10px 0;
                       background:#2563eb;color:#fff;border-radius:8px;
@@ -109,14 +115,24 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
               🔗 바로가기
             </a>
           </td>
-          <td width="4%"></td>
-          <td width="48%" style="padding-left:4px;">
+          <td width="3%"></td>
+          <td width="30%" style="padding:0 3px;">
+            <a href="{like_link}"
+               style="display:block;text-align:center;padding:10px 0;
+                      background:#fff;color:#ef4444;border-radius:8px;
+                      font-size:13px;font-weight:600;text-decoration:none;
+                      border:1.5px solid #fecaca;">
+              ❤️ 좋아요
+            </a>
+          </td>
+          <td width="3%"></td>
+          <td width="28%" style="padding-left:3px;">
             <a href="{save_link}"
                style="display:block;text-align:center;padding:10px 0;
                       background:#fff;color:#2563eb;border-radius:8px;
                       font-size:13px;font-weight:600;text-decoration:none;
                       border:1.5px solid #2563eb;">
-              🔖 저장하기
+              🔖 저장
             </a>
           </td>
         </tr>

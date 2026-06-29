@@ -21,7 +21,32 @@ from pipeline.newsletter_sender import run as send_newsletter, preview as previe
 
 POST_URL = os.environ.get("LINKEDIN_POST_URL", "")
 SUBSCRIBERS_FILE  = "data/subscribers.json"
+FORM_SUBSCRIBERS_FILE = "data/form_subscribers.json"
 RESULTS_FILE      = "data/matched_results.json"
+
+
+def load_all_subscribers() -> list[dict]:
+    """LinkedIn 구독자 + 설문 응답자 합치기"""
+    subscribers = []
+
+    # LinkedIn 구독자
+    try:
+        linkedin = json.load(open(SUBSCRIBERS_FILE, encoding="utf-8"))
+        subscribers.extend(linkedin)
+        print(f"LinkedIn 구독자: {len(linkedin)}명")
+    except FileNotFoundError:
+        print(f"{SUBSCRIBERS_FILE} 없음")
+
+    # 설문 응답자
+    try:
+        form = json.load(open(FORM_SUBSCRIBERS_FILE, encoding="utf-8"))
+        subscribers.extend(form)
+        print(f"설문 응답자: {len(form)}명")
+    except FileNotFoundError:
+        print(f"{FORM_SUBSCRIBERS_FILE} 없음 — 설문 응답자 없이 진행")
+
+    print(f"총 구독자: {len(subscribers)}명")
+    return subscribers
 
 
 async def step1_crawl() -> list[dict]:
@@ -74,10 +99,12 @@ async def main(mode: str = "all"):
 
     if mode == "all":
         subscribers = await step1_crawl()
-        if not subscribers:
+        # 설문 응답자 합치기
+        all_subscribers = load_all_subscribers()
+        if not all_subscribers:
             print("수집된 구독자 없음 — 종료")
             return
-        results = await step2_match(subscribers)
+        results = await step2_match(all_subscribers)
         if not results:
             print("매칭 결과 없음 — 종료")
             return
@@ -87,13 +114,11 @@ async def main(mode: str = "all"):
         await step1_crawl()
 
     elif mode == "match":
-        try:
-            subscribers = json.load(open(SUBSCRIBERS_FILE, encoding="utf-8"))
-            print(f"{SUBSCRIBERS_FILE} 로드: {len(subscribers)}명")
-        except FileNotFoundError:
-            print(f"{SUBSCRIBERS_FILE} 없음 — 먼저 crawl 실행")
+        all_subscribers = load_all_subscribers()
+        if not all_subscribers:
+            print("구독자 없음 — 먼저 crawl 실행")
             return
-        await step2_match(subscribers)
+        await step2_match(all_subscribers)
 
     elif mode == "send":
         await step3_send()

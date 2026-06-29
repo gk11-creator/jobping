@@ -11,7 +11,8 @@ from adapters.base_adapter import BaseAdapter
 from adapters.jobkorea_adapter import JobKoreaAdapter
 from adapters.linkareer_adapter import LinkareerAdapter
 from adapters.superookie_adapter import SuperookieAdapter
-
+from adapters.catch_adapter import CatchAdapter
+from adapters.jasoseol_adapter import JasoseolAdapter
 
 class Orchestrator:
     def __init__(self, headless: bool = True):
@@ -35,6 +36,8 @@ class Orchestrator:
             JobKoreaAdapter(),
             LinkareerAdapter(),
             SuperookieAdapter(),
+            CatchAdapter(),
+            JasoseolAdapter()
         ]
 
         print(f"[오케스트레이터] 수집 시작 — {len(adapters)}개 사이트")
