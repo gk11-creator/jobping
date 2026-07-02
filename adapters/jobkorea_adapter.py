@@ -38,16 +38,24 @@ class JobKoreaAdapter(BaseAdapter):
 
     def _build_payload(self, user_profile: dict, page: int = 1) -> dict:
         duty_codes = DUTY_MAP.get(user_profile.get("category", ""), [])
+        
+        # duty 코드 없으면 스킬 키워드로 검색
+        keyword = ""
+        if not duty_codes:
+            skills = user_profile.get("skills", [])
+            keyword = skills[0] if skills else user_profile.get("category", "")
+
         payload = {
             "condition[duty]": ",".join(duty_codes),
             "condition[local]": LOCAL_MAP.get(user_profile.get("location", "서울"), "I000"),
             "condition[jobtype]": JOBTYPE_MAP.get(user_profile.get("employment_type", ""), ""),
-            "condition[menucode]": "", "page": str(page), "pagesize": "40",
+            "condition[menucode]": "",
+            "condition[keyword]": keyword,  # 키워드 검색 추가
+            "page": str(page), "pagesize": "40",
             "order": "20", "direct": "0", "onePick": "0", "confirm": "0",
             "tabindex": "0", "profile": "0",
         }
         return {k: v for k, v in payload.items() if v != ""}
-
     async def fetch_job_list(self, user_profile: dict, page: int = 1) -> list[dict]:
         if not self._session_valid:
             await self._refresh_session()

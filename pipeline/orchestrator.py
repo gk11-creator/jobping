@@ -38,7 +38,7 @@ class Orchestrator:
             LinkareerAdapter(),
             SuperookieAdapter(),
             CatchAdapter(),
-            JasoseolAdapter()
+            JasoseolAdapter(),
             WantedAdapter(),
         ]
 

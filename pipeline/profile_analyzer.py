@@ -31,7 +31,7 @@ async def analyze_profile(subscriber: dict) -> dict:
 
 [출력 형식 - 반드시 아래 JSON만 출력]
 {{
-  "category": "IT개발 > 서버/백엔드",
+  "categories": ["IT개발 > 서버/백엔드"],
   "employment_type": "인턴",
   "location": "서울",
   "skills": ["Python", "Django"],
@@ -42,18 +42,20 @@ async def analyze_profile(subscriber: dict) -> dict:
   "summary": "이 사람을 한 줄로 요약"
 }}
 
-[category 선택지]
+[category 선택지 - categories 배열에 1~3개 선택]
 IT개발 > 서버/백엔드, IT개발 > 프론트엔드, IT개발 > 풀스택,
 IT개발 > AI/ML, IT개발 > 데이터분석, IT개발 > DevOps,
 IT개발 > iOS, IT개발 > Android, IT개발 > QA, IT개발 > 보안,
-IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업
-제조/QC/QA, 금융/회계, 인사/HR, 디자인 > 제품/가구디자인,
-디자인 > 그래픽, 디자인 > UI/UX, 영업/영업관리, 무역/유통,
-서비스/고객지원, 물류/구매
+IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업/영업관리,
+제조/QC/QA, 금융/회계, 인사/HR, 법무/컴플라이언스,
+디자인 > 제품/가구디자인, 디자인 > 그래픽, 디자인 > UI/UX,
+무역/유통, 서비스/고객지원, 물류/구매, 경영지원/총무
 
 [규칙]
 - 학생이면 employment_type은 "인턴"
-- 스킬/경력 기반으로 category 추론
+- 스킬/경력/소개 기반으로 categories 추론 (최대 3개)
+- 여러 직군을 원하는 경우 모두 포함 (예: 법무+경영+HR → 3개)
+- 하나의 직군만 원하면 1개만 포함
 - 위치 정보 없으면 "서울" 기본값
 - min_grade는 3.0~5.0 사이
 - graduation_year는 숫자 문자열 또는 null
@@ -70,7 +72,13 @@ IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업
         user_profile = json.loads(raw)
         user_profile["email"] = subscriber.get("email", "")
         user_profile["name"] = subscriber.get("name", "")
-        print(f"[프로필분석] {user_profile.get('name')} → {user_profile.get('category')} / {user_profile.get('location')}")
+
+        # categories → category 호환성 유지
+        categories = user_profile.get("categories", [])
+        if categories:
+            user_profile["category"] = categories[0]
+        
+        print(f"[프로필분석] {user_profile.get('name')} → {categories} / {user_profile.get('location')}")
         return user_profile
     except Exception as e:
         print(f"[프로필분석] GPT 오류: {e}")
@@ -79,10 +87,12 @@ IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업
 
 def _default_profile(subscriber: dict) -> dict:
     profile = subscriber.get("profile", {}) or {}
+    headline = profile.get("headline", "기타")
     return {
         "email": subscriber.get("email", ""),
         "name": subscriber.get("name", ""),
-        "category": profile.get("headline", "기타"),
+        "categories": [headline],
+        "category": headline,
         "employment_type": profile.get("employment_type", "인턴"),
         "location": profile.get("desired_location") or profile.get("location", "서울"),
         "skills": profile.get("skills", []),
@@ -99,7 +109,7 @@ async def score_jobs(user_profile: dict, jobs: list[dict], top_n: int = 10) -> l
         return []
 
     jobs_summary = []
-    for i, job in enumerate(jobs[:50]):
+    for i, job in enumerate(jobs[:60]):
         jobs_summary.append({
             "idx": i,
             "title": job.get("title", ""),
@@ -112,13 +122,16 @@ async def score_jobs(user_profile: dict, jobs: list[dict], top_n: int = 10) -> l
             "source": job.get("source", ""),
         })
 
+    categories = user_profile.get("categories", [user_profile.get("category", "")])
+    categories_str = ", ".join(categories)
+
     prompt = f"""
 다음은 구직자 프로필과 채용 공고 목록입니다.
 구직자에게 가장 적합한 공고 {top_n}개를 선택하고 점수를 매겨주세요.
 
 [구직자 프로필]
 이름: {user_profile.get('name')}
-희망직군: {user_profile.get('category')}
+희망직군: {categories_str}
 고용형태: {user_profile.get('employment_type')}
 희망지역: {user_profile.get('location')}
 스킬: {', '.join(user_profile.get('skills', []))}
@@ -135,17 +148,19 @@ async def score_jobs(user_profile: dict, jobs: list[dict], top_n: int = 10) -> l
 ]
 
 [채점 기준]
-- 직군 일치: 40점
+- 직군 일치 (희망직군 중 하나라도 일치하면 만점): 40점
 - 고용형태 일치: 20점
 - 지역 일치: 15점
 - 기업 평점 높을수록: 10점
-- 마감 여유 D-7 이상: 10점
+- 마감 여유 D-7 이상: 10점 (마감일 정보 없는 경우 5점 기본 부여)
 - 기업 규모 선호 일치: 5점
 
 [절대 제외 조건 - 아무리 점수가 높아도 선택 금지]
 - 공고 제목에 "파트", "홀서빙", "세척", "주방", "시급", "알바", "아르바이트" 포함된 경우
+- 공고 제목에 "주방", "조리", "기능직" 포함된 경우
 - 학원, 과외, 교육생 모집, 수강생 모집 공고
-- 구직자 희망 직군({user_profile.get('category')})과 전혀 무관한 직군 (예: 영업 희망자에게 주방/요리 공고 금지)
+- 희망직군({categories_str})과 전혀 무관한 직군
+- "영커리언스", "청년인턴", "산업은행", "기업은행" 관련 공고
 위 조건에 해당하면 반드시 제외하고 다른 공고를 선택할 것.
 
 [추천 이유 작성 규칙]
@@ -195,8 +210,22 @@ async def run_pipeline(subscribers: list[dict]) -> list[dict]:
         print(f"처리 중: {subscriber.get('name')} ({subscriber.get('email')})")
 
         user_profile = await analyze_profile(subscriber)
-        orchestrator = Orchestrator(headless=True)
-        all_jobs = await orchestrator.run(user_profile, max_pages=2)
+        categories = user_profile.get("categories", [user_profile.get("category", "")])
+
+        all_jobs = []
+        seen_urls = set()
+
+        for category in categories:
+            profile_for_category = {**user_profile, "category": category}
+            orchestrator = Orchestrator(headless=True)
+            jobs = await orchestrator.run(profile_for_category, max_pages=2)
+
+            # 카테고리별 중복 제거
+            for job in jobs:
+                url = job.get("source_url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    all_jobs.append(job)
 
         # 마감 지난 공고 제거
         today = date.today()

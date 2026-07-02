@@ -8,6 +8,7 @@ from adapters.base_adapter import BaseAdapter
 
 BASE_URL = "https://www.wanted.co.kr"
 
+# 원티드 직무 카테고리 코드 (실제 URL에서 확인된 값)
 CATEGORY_MAP = {
     "IT개발": "518",
     "서버/백엔드": "518",
@@ -22,19 +23,19 @@ CATEGORY_MAP = {
     "보안": "518",
     "마케팅": "523",
     "광고": "523",
-    "디자인": "521",
-    "UI/UX": "521",
-    "그래픽": "521",
-    "가구": "521",
-    "제품": "521",
-    "영업": "525",
-    "영업관리": "525",
+    "디자인": "511",  # 수정
+    "UI/UX": "511",  # 수정
+    "그래픽": "511",  # 수정
+    "가구": "511",   # 수정
+    "제품": "511",   # 수정
+    "영업": "530",
+    "영업관리": "530",
     "기획": "507",
     "PM": "507",
-    "금융": "534",
-    "회계": "534",
-    "인사": "524",
-    "HR": "524",
+    "금융": "508",
+    "회계": "508",
+    "인사": "517",
+    "HR": "517",
     "QC": "518",
     "제조": "555",
     "물류": "540",
@@ -72,7 +73,6 @@ class WantedAdapter(BaseAdapter):
         return f"{BASE_URL}/wdlist/{category_id}?job_sort=job.latest_order&years={career}&locations=all&page={page}"
 
     def _parse_deadline(self, raw: str) -> str:
-        """2026.07.05 형태를 2026-07-05로 변환"""
         try:
             raw = raw.strip()
             match = re.match(r"(\d{4})\.(\d{2})\.(\d{2})", raw)
@@ -83,7 +83,6 @@ class WantedAdapter(BaseAdapter):
         return ""
 
     async def _fetch_deadline(self, url: str) -> str:
-        """공고 상세 페이지에서 마감일 파싱"""
         try:
             await self.page.goto(url, wait_until="domcontentloaded", timeout=15000)
             await asyncio.sleep(2)
@@ -92,7 +91,6 @@ class WantedAdapter(BaseAdapter):
             html = await self.page.content()
             soup = BeautifulSoup(html, "html.parser")
 
-            # 마감일 컨테이너 찾기 - h2 태그가 "마감일" 텍스트인 article
             articles = soup.find_all("article")
             for article in articles:
                 h2 = article.find("h2")
@@ -127,7 +125,6 @@ class WantedAdapter(BaseAdapter):
             cards = soup.select('a[href^="/wd/"]')
             print(f"[원티드] 아이템 {len(cards)}개 발견")
 
-            # 중복 제거 후 최대 15개만 상세 접속
             seen_urls = set()
             job_candidates = []
             for card in cards:
@@ -170,7 +167,6 @@ class WantedAdapter(BaseAdapter):
                     "rating": None,
                 })
 
-            # 상세 페이지에서 마감일 파싱 (최대 15개)
             jobs = []
             for candidate in job_candidates[:15]:
                 print(f"[원티드] 마감일 확인: {candidate['title'][:20]}...")
