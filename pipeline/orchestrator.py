@@ -13,6 +13,7 @@ from adapters.linkareer_adapter import LinkareerAdapter
 from adapters.superookie_adapter import SuperookieAdapter
 from adapters.catch_adapter import CatchAdapter
 from adapters.jasoseol_adapter import JasoseolAdapter
+from adapters.wanted_adapter import WantedAdapter
 
 class Orchestrator:
     def __init__(self, headless: bool = True):
@@ -38,6 +39,7 @@ class Orchestrator:
             SuperookieAdapter(),
             CatchAdapter(),
             JasoseolAdapter()
+            WantedAdapter(),
         ]
 
         print(f"[오케스트레이터] 수집 시작 — {len(adapters)}개 사이트")

@@ -87,7 +87,18 @@ async def track_click(
         "url": urllib.parse.unquote(url),
         "deadline": deadline,
     })
-    return RedirectResponse(url=urllib.parse.unquote(url))
+    decoded_url = urllib.parse.unquote(url)
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="refresh" content="0;url={decoded_url}">
+<title>이동 중...</title>
+</head>
+<body>
+<p>잠시 후 공고 페이지로 이동합니다...</p>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 # ─────────────────────────────────────────

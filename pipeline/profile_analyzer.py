@@ -47,6 +47,9 @@ IT개발 > 서버/백엔드, IT개발 > 프론트엔드, IT개발 > 풀스택,
 IT개발 > AI/ML, IT개발 > 데이터분석, IT개발 > DevOps,
 IT개발 > iOS, IT개발 > Android, IT개발 > QA, IT개발 > 보안,
 IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업
+제조/QC/QA, 금융/회계, 인사/HR, 디자인 > 제품/가구디자인,
+디자인 > 그래픽, 디자인 > UI/UX, 영업/영업관리, 무역/유통,
+서비스/고객지원, 물류/구매
 
 [규칙]
 - 학생이면 employment_type은 "인턴"
@@ -75,18 +78,19 @@ IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업
 
 
 def _default_profile(subscriber: dict) -> dict:
+    profile = subscriber.get("profile", {}) or {}
     return {
         "email": subscriber.get("email", ""),
         "name": subscriber.get("name", ""),
-        "category": "IT개발 > 서버/백엔드",
-        "employment_type": "인턴",
-        "location": "서울",
-        "skills": [],
-        "career_level": "신입",
+        "category": profile.get("headline", "기타"),
+        "employment_type": profile.get("employment_type", "인턴"),
+        "location": profile.get("desired_location") or profile.get("location", "서울"),
+        "skills": profile.get("skills", []),
+        "career_level": profile.get("employment_type", "신입"),
         "preferred_company_size": "전체",
         "min_grade": 3.0,
         "graduation_year": None,
-        "summary": "",
+        "summary": profile.get("summary", ""),
     }
 
 
