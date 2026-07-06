@@ -69,9 +69,21 @@ async def delete_row(table: str, row_id):
         return res
 
 
-# ─────────────────────────────────────────
-# 클릭 추적 + 리다이렉트
-# ─────────────────────────────────────────
+import html
+
+def normalize_url(u: str) -> str:
+    """인코딩 횟수와 무관하게 http(s)로 시작할 때까지 디코딩 (최대 3회)"""
+    if not u:
+        return ""
+    for _ in range(3):
+        if u.startswith("http://") or u.startswith("https://"):
+            return u
+        decoded = urllib.parse.unquote(u)
+        if decoded == u:  # 더 이상 변화 없으면 중단
+            break
+        u = decoded
+    return u
+
 @app.get("/track")
 async def track_click(
     user: str = Query(""),
@@ -80,26 +92,36 @@ async def track_click(
     url: str = Query(""),
     deadline: str = Query(""),
 ):
+    target = normalize_url(url)
+
     await insert_row("clicks", {
         "user_name": clean_user(user),
-        "title": urllib.parse.unquote(title),
-        "company": urllib.parse.unquote(company),
-        "url": urllib.parse.unquote(url),
+        "title": title,       # FastAPI가 이미 디코딩함 — 추가 unquote 제거
+        "company": company,
+        "url": target,
         "deadline": deadline,
     })
-    decoded_url = urllib.parse.unquote(url)
-    html = f"""<!DOCTYPE html>
+
+    if not target.startswith(("http://", "https://")):
+        return HTMLResponse("<p>잘못된 링크입니다.</p>", status_code=400)
+
+    safe_attr = html.escape(target, quote=True)   # 속성용: & → &amp;
+    safe_js = json.dumps(target)                  # JS용: 안전한 문자열 리터럴
+
+    html_page = f"""<!DOCTYPE html>
 <html>
 <head>
-<meta http-equiv="refresh" content="0;url={decoded_url}">
+<meta charset="UTF-8">
+<meta http-equiv="refresh" content="0;url={safe_attr}">
 <title>이동 중...</title>
 </head>
 <body>
 <p>잠시 후 공고 페이지로 이동합니다...</p>
+<p><a href="{safe_attr}">자동으로 이동하지 않으면 여기를 클릭하세요</a></p>
+<script>window.location.replace({safe_js});</script>
 </body>
 </html>"""
-    return HTMLResponse(content=html)
-
+    return HTMLResponse(content=html_page)
 
 # ─────────────────────────────────────────
 # 공고 저장
