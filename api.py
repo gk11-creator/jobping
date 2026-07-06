@@ -9,6 +9,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
+import html
+import json
 
 load_dotenv()
 
@@ -68,8 +70,6 @@ async def delete_row(table: str, row_id):
         )
         return res
 
-
-import html
 
 def normalize_url(u: str) -> str:
     """인코딩 횟수와 무관하게 http(s)로 시작할 때까지 디코딩 (최대 3회)"""
