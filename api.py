@@ -99,7 +99,11 @@ async def track_click(
         "url": url,
         "deadline": deadline,
     })
-    return RedirectResponse(url=url, status_code=302)
+    return RedirectResponse(
+        url=url,
+        status_code=302,
+        headers={"Referrer-Policy": "no-referrer"},
+    )
 
 # ─────────────────────────────────────────
 # 공고 저장
