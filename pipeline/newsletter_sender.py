@@ -91,7 +91,7 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
 
       <!-- 제목 + D-day -->
       <div style="margin-bottom:6px;">
-        <a href="{track_link}" style="font-size:15px;font-weight:700;color:#111;text-decoration:none;line-height:1.4;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+        <a href="{track_link}" target="_blank" rel="noopener" style="font-size:15px;font-weight:700;color:#111;text-decoration:none;line-height:1.4;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
           {title}
         </a>
         {dday_text}
@@ -108,7 +108,7 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
       <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
         <tr>
           <td width="36%" style="padding-right:3px;">
-            <a href="{track_link}"
+            <a href="{track_link}" target="_blank" rel="noopener"
                style="display:block;text-align:center;padding:10px 0;
                       background:#2563eb;color:#fff;border-radius:8px;
                       font-size:13px;font-weight:600;text-decoration:none;">
@@ -117,7 +117,7 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
           </td>
           <td width="3%"></td>
           <td width="30%" style="padding:0 3px;">
-            <a href="{like_link}"
+            <a href="{like_link}" target="_blank" rel="noopener"
                style="display:block;text-align:center;padding:10px 0;
                       background:#fff;color:#ef4444;border-radius:8px;
                       font-size:13px;font-weight:600;text-decoration:none;
@@ -127,7 +127,7 @@ def _job_card(job: dict, index: int, hidden: bool = False, save_url: str = "", n
           </td>
           <td width="3%"></td>
           <td width="28%" style="padding-left:3px;">
-            <a href="{save_link}"
+            <a href="{save_link}" target="_blank" rel="noopener"
                style="display:block;text-align:center;padding:10px 0;
                       background:#fff;color:#2563eb;border-radius:8px;
                       font-size:13px;font-weight:600;text-decoration:none;
@@ -182,7 +182,7 @@ def _fallback_template(name: str, jobs: list, user_profile: dict) -> dict:
 
     <!-- 저장된 공고 보기 -->
     <div style="padding:0 24px 24px;">
-      <a href="{SAVE_API_URL}/saved?user={urllib.parse.quote(name)}"
+      <a href="{SAVE_API_URL}/saved?user={urllib.parse.quote(name)}" target="_blank" rel="noopener"
          style="display:block;text-align:center;padding:12px;
                 background:#f9fafb;color:#374151;border:1px solid #e5e7eb;
                 border-radius:8px;font-size:14px;font-weight:600;text-decoration:none;">
