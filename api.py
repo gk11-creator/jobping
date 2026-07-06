@@ -92,36 +92,32 @@ async def track_click(
     url: str = Query(""),
     deadline: str = Query(""),
 ):
-    target = normalize_url(url)
+    # FastAPI가 이미 1회 디코딩함 → 추가 unquote 없음
+    target = url
 
     await insert_row("clicks", {
         "user_name": clean_user(user),
-        "title": title,       # FastAPI가 이미 디코딩함 — 추가 unquote 제거
+        "title": title,
         "company": company,
         "url": target,
         "deadline": deadline,
     })
 
-    if not target.startswith(("http://", "https://")):
-        return HTMLResponse("<p>잘못된 링크입니다.</p>", status_code=400)
+    safe = target.replace('"', '%22').replace("&", "&amp;")
 
-    safe_attr = html.escape(target, quote=True)   # 속성용: & → &amp;
-    safe_js = json.dumps(target)                  # JS용: 안전한 문자열 리터럴
-
-    html_page = f"""<!DOCTYPE html>
+    page = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="refresh" content="0;url={safe_attr}">
+<meta http-equiv="refresh" content="0;url={safe}">
 <title>이동 중...</title>
 </head>
 <body>
 <p>잠시 후 공고 페이지로 이동합니다...</p>
-<p><a href="{safe_attr}">자동으로 이동하지 않으면 여기를 클릭하세요</a></p>
-<script>window.location.replace({safe_js});</script>
+<p><a href="{safe}">이동하지 않으면 클릭</a></p>
 </body>
 </html>"""
-    return HTMLResponse(content=html_page)
+    return HTMLResponse(content=page)
 
 # ─────────────────────────────────────────
 # 공고 저장
