@@ -92,38 +92,14 @@ async def track_click(
     url: str = Query(""),
     deadline: str = Query(""),
 ):
-    target = url
-
     await insert_row("clicks", {
         "user_name": clean_user(user),
         "title": title,
         "company": company,
-        "url": target,
+        "url": url,
         "deadline": deadline,
     })
-
-    safe = target.replace('"', '%22').replace("&", "&amp;")
-    js_url = target.replace('"', '')
-
-    page = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="referrer" content="no-referrer">
-<meta http-equiv="refresh" content="1;url={safe}">
-<title>이동 중...</title>
-</head>
-<body>
-<p>잠시 후 공고 페이지로 이동합니다...</p>
-<p><a href="{safe}" rel="noreferrer">이동하지 않으면 클릭</a></p>
-<script>
-  setTimeout(function() {{
-    window.location.replace("{js_url}");
-  }}, 100);
-</script>
-</body>
-</html>"""
-    return HTMLResponse(content=page)
+    return RedirectResponse(url=url, status_code=302)
 
 # ─────────────────────────────────────────
 # 공고 저장
