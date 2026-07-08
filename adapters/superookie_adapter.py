@@ -102,18 +102,58 @@ class SuperookieAdapter(BaseAdapter):
         print(f"[슈퍼루키] 아이템 {len(items)}개 발견")
 
         for item in items:
-                    try:
-                        # 링크
-                        link_tag = item.select_one("a.job-detail-link")
-                        if not link_tag:
-                            continue
-                        href = link_tag.get("href", "")
-                        source_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+            try:
+                # 링크
+                link_tag = item.select_one("a.job-detail-link")
+                if not link_tag:
+                    continue
+                href = link_tag.get("href", "")
+                source_url = href if href.startswith("http") else f"{BASE_URL}{href}"
 
-                        # 제목
-                        title_tag = item.select_one(".job-title")
-                        title = title_tag.get_text(strip=True) if title_tag else ""
-                        if not title:
-                            continue
+                # 제목
+                title_tag = item.select_one(".job-title")
+                title = title_tag.get_text(strip=True) if title_tag else ""
+                if not title:
+                    continue
 
-                        # 회사명
+                # 회사명
+                company_tag = item.select_one("h5")
+                company = company_tag.get_text(strip=True) if company_tag else ""
+
+                # 마감일
+                deadline_tag = item.select_one(".color-gray.mobile-text-12")
+                deadline_raw = deadline_tag.get_text(strip=True) if deadline_tag else ""
+
+                jobs.append({
+                    "title": title,
+                    "company": company,
+                    "category": user_profile.get("category", ""),
+                    "employment_type": "인턴",
+                    "location": user_profile.get("location", "서울"),
+                    "deadline": self._parse_deadline(deadline_raw),
+                    "source": "슈퍼루키",
+                    "source_url": source_url,
+                    "rating": None,
+                    "competition_ratio": None,
+                    "_raw": {"deadline_raw": deadline_raw}
+                })
+            except Exception as e:
+                print(f"[슈퍼루키] 파싱 오류: {e}")
+        return jobs
+
+    def _parse_deadline(self, raw: str) -> Optional[str]:
+        today = datetime.now()
+        if not raw or "상시" in raw or "채용시" in raw:
+            return None
+        m = re.search(r"(\d{4})[.\-/](\d{2})[.\-/](\d{2})", raw)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        m2 = re.search(r"(\d{2})[.\-/](\d{2})", raw)
+        if m2:
+            month, day = int(m2.group(1)), int(m2.group(2))
+            year = today.year if month >= today.month else today.year + 1
+            return f"{year}-{month:02d}-{day:02d}"
+        m3 = re.search(r"D-(\d+)", raw)
+        if m3:
+            return (today + timedelta(days=int(m3.group(1)))).strftime("%Y-%m-%d")
+        return None
