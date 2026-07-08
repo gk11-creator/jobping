@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 from adapters.base_adapter import BaseAdapter
+from adapters.category_map import get_search_keyword
 
 DUTY_MAP = {
     "IT개발 > 서버/백엔드": ["1000229"], "IT개발 > 프론트엔드": ["1000230"],
@@ -15,6 +16,8 @@ DUTY_MAP = {
     "IT개발 > 보안": ["1000234"], "IT개발 > QA": ["1000235"],
     "IT개발 > 게임": ["1000231"], "기획/전략": ["1000101"],
     "마케팅/광고": ["1000103"], "디자인": ["1000201"], "영업": ["1000301"],
+    # 아래 두 항목은 잡코리아에서 "법무·사무·총무" 하나의 duty로 묶여 있음 (직접 확인됨)
+    "법무/컴플라이언스": ["1000065"], "경영지원/총무": ["1000065"],
 }
 LOCAL_MAP = {
     "서울":"I000","경기":"I001","인천":"I002","부산":"I003","대구":"I004",
@@ -37,13 +40,15 @@ class JobKoreaAdapter(BaseAdapter):
         print("[잡코리아] 세션 재획득 완료")
 
     def _build_payload(self, user_profile: dict, page: int = 1) -> dict:
-        duty_codes = DUTY_MAP.get(user_profile.get("category", ""), [])
-        
-        # duty 코드 없으면 스킬 키워드로 검색
+        category = user_profile.get("category", "")
+        duty_codes = DUTY_MAP.get(category, [])
+
+        # duty 코드가 없으면 카테고리 기반 검색 키워드로 폴백
+        # (예전엔 스킬 목록[0]을 썼는데, "MS 엑셀" 같은 무관한 스킬이 검색어로
+        #  나가는 문제가 있어 카테고리 자체를 키워드로 변환해서 사용)
         keyword = ""
         if not duty_codes:
-            skills = user_profile.get("skills", [])
-            keyword = skills[0] if skills else user_profile.get("category", "")
+            keyword = get_search_keyword(category)
 
         payload = {
             "condition[duty]": ",".join(duty_codes),

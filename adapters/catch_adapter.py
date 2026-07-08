@@ -5,6 +5,7 @@ import asyncio
 import re
 from datetime import datetime, date
 from adapters.base_adapter import BaseAdapter
+from adapters.category_map import get_search_keyword
 
 BASE_URL = "https://www.catch.co.kr"
 
@@ -36,13 +37,18 @@ class CatchAdapter(BaseAdapter):
         print("[캐치] 세션 재획득 완료")
 
     def _get_duty(self, user_profile: dict) -> str:
+        """
+        카테고리를 먼저, 우선적으로 확인한다.
+        (예전엔 category와 skills를 합쳐서 한 번에 텍스트 매칭했는데, 다중
+        카테고리를 가진 사용자의 경우 스킬 하나가 먼저 매칭되어 두 번째
+        카테고리 검색이 첫 번째로 오염되는 버그가 있었음 — 장세욱 케이스로 확인됨)
+        매칭 실패시 빈 문자열 반환 (예전처럼 "2"=IT개발로 고정하지 않음).
+        """
         category = user_profile.get("category", "")
-        skills = user_profile.get("skills", [])
-        all_text = category + " ".join(skills)
         for keyword, duty in DUTY_MAP.items():
-            if keyword in all_text:
+            if keyword in category:
                 return duty
-        return "2"
+        return ""
 
     def _get_career(self, user_profile: dict) -> str:
         emp = user_profile.get("employment_type", "")
@@ -66,11 +72,23 @@ class CatchAdapter(BaseAdapter):
             pass
         return ""
 
+    def _get_search_keyword(self, user_profile: dict, duty: str) -> str:
+        """
+        duty(카테고리 코드)가 매칭됐으면 스킬 키워드를 보조적으로 사용해도 무방하지만,
+        duty 매칭에 실패했을 때는 카테고리 자체를 검색 키워드로 사용한다.
+        (예전엔 항상 skills[0]을 사용해서 "MS 엑셀" 같은 무관한 검색어가 나가는
+        문제가 있었음 — 김태진 케이스로 확인됨)
+        """
+        category = user_profile.get("category", "")
+        if duty:
+            skills = user_profile.get("skills", [])
+            return skills[0] if skills else ""
+        return get_search_keyword(category)
+
     def _get_search_url(self, user_profile: dict, page: int = 1) -> str:
         duty = self._get_duty(user_profile)
         career = self._get_career(user_profile)
-        skills = user_profile.get("skills", [])
-        keyword = skills[0] if skills else ""
+        keyword = self._get_search_keyword(user_profile, duty)
         return f"{BASE_URL}/NCS/RecruitSearch?keyword={keyword}&duty={duty}&career={career}&pageNo={page}"
 
     async def fetch_job_list(self, user_profile: dict, page: int = 1) -> list[dict]:

@@ -3,12 +3,18 @@
 """
 import asyncio
 import re
+import urllib.parse
 from datetime import datetime, date
 from adapters.base_adapter import BaseAdapter
+from adapters.category_map import get_search_keyword
 
 BASE_URL = "https://www.wanted.co.kr"
 
 # 원티드 직무 카테고리 코드 (실제 URL에서 확인된 값)
+# 주의: 매칭은 딕셔너리 순서대로 부분 문자열 검사를 하므로, 짧고 일반적인 키가
+# 긴/구체적인 키보다 먼저 있으면 잘못 걸릴 수 있다 (예전에 "제조/QC/QA" 카테고리가
+# "제조"에 도달하기 전에 "QA"에 먼저 매칭되던 버그가 있었음).
+# 그래서 "제조"를 "QC"/"QA"보다 앞에 배치했다.
 CATEGORY_MAP = {
     "IT개발": "518",
     "서버/백엔드": "518",
@@ -19,15 +25,14 @@ CATEGORY_MAP = {
     "DevOps": "518",
     "iOS": "518",
     "Android": "518",
-    "QA": "518",
     "보안": "518",
     "마케팅": "523",
     "광고": "523",
-    "디자인": "511",  # 수정
-    "UI/UX": "511",  # 수정
-    "그래픽": "511",  # 수정
-    "가구": "511",   # 수정
-    "제품": "511",   # 수정
+    "디자인": "511",
+    "UI/UX": "511",
+    "그래픽": "511",
+    "가구": "511",
+    "제품": "511",
     "영업": "530",
     "영업관리": "530",
     "기획": "507",
@@ -36,8 +41,9 @@ CATEGORY_MAP = {
     "회계": "508",
     "인사": "517",
     "HR": "517",
+    "제조": "555",  # QC/QA보다 먼저 와야 "제조/QC/QA" 카테고리가 올바르게 매칭됨
     "QC": "518",
-    "제조": "555",
+    "QA": "518",
     "물류": "540",
     "무역": "540",
 }
@@ -64,13 +70,25 @@ class WantedAdapter(BaseAdapter):
         for key, code in CATEGORY_MAP.items():
             if key in category:
                 return code
-        return "518"
+        return ""  # 매칭 실패시 빈 값 (예전처럼 "518"=IT개발로 고정하지 않음)
 
     def _get_search_url(self, user_profile: dict, page: int = 1) -> str:
+        """
+        카테고리가 CATEGORY_MAP에 등록돼 있으면 정밀 카테고리 리스트(wdlist)를 사용하고,
+        등록돼 있지 않으면 원티드의 실제 검색 페이지(search?query=...&tab=position)로
+        폴백한다. (예전엔 미등록 카테고리가 전부 IT개발[518]로 고정되는 문제가 있었음
+        — 김태진(법무/경영지원) 케이스로 확인됨)
+        """
         category_id = self._get_category_id(user_profile)
         employment_type = user_profile.get("employment_type", "")
         career = "0" if ("신입" in employment_type or "인턴" in employment_type) else "1"
-        return f"{BASE_URL}/wdlist/{category_id}?job_sort=job.latest_order&years={career}&locations=all&page={page}"
+
+        if category_id:
+            return f"{BASE_URL}/wdlist/{category_id}?job_sort=job.latest_order&years={career}&locations=all&page={page}"
+
+        keyword = get_search_keyword(user_profile.get("category", ""))
+        encoded_keyword = urllib.parse.quote(keyword)
+        return f"{BASE_URL}/search?query={encoded_keyword}&tab=position"
 
     def _parse_deadline(self, raw: str) -> str:
         try:
@@ -122,6 +140,8 @@ class WantedAdapter(BaseAdapter):
             html = await self.page.content()
             soup = BeautifulSoup(html, "html.parser")
 
+            # 카테고리 리스트(wdlist)와 검색결과(search) 페이지 모두 공고 링크는
+            # 사이트 공통 URL 패턴(/wd/{id})을 쓰므로 동일 셀렉터로 파싱 가능
             cards = soup.select('a[href^="/wd/"]')
             print(f"[원티드] 아이템 {len(cards)}개 발견")
 
