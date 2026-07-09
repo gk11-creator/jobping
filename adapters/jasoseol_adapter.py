@@ -35,15 +35,19 @@ class JasoseolAdapter(BaseAdapter):
 
     def _get_keyword_and_type(self, user_profile: dict) -> tuple[str, str]:
         """
-        등록된 카테고리 키워드가 있으면 (키워드, "category")를 반환하고,
-        없으면 (공용 검색 키워드, "keyword")를 반환한다.
-        (예전엔 스킬 목록[0]로 폴백해서 "MS 엑셀" 같은 무관한 검색어가
-        나가는 문제가 있었음 — 김태진 케이스로 확인됨)
+        자소설닷컴은 duty 코드 같은 구조적 필터가 전혀 없고 100% 텍스트 검색(q=)만
+        지원한다. 그래서 CATEGORY_KEYWORD_MAP에 등록된 키워드든, category_map.py의
+        공용 폴백 키워드든 — 어느 쪽이든 결국 "이 사이트에 텍스트로 검색해본 것"일
+        뿐이라 신뢰도 차이가 없다. match_type은 항상 "keyword"로 고정해서, 최종
+        사전필터 단계에서 반드시 제목 관련성 검증을 받도록 한다.
+        (예전엔 CATEGORY_KEYWORD_MAP 매칭시 "category"로 잘못 분류해서 검증을
+        건너뛰었고, 그 결과 "오피스 세일즈 담당자" 같은 무관한 공고가 "가구디자인"·
+        "데이터분석" 등 서로 다른 카테고리 사용자 모두에게 새어 들어간 것이 확인됨)
         """
         category = user_profile.get("category", "")
         for key, keyword in CATEGORY_KEYWORD_MAP.items():
             if key in category:
-                return keyword, "category"
+                return keyword, "keyword"
         return get_search_keyword(category), "keyword"
 
     def _parse_deadline(self, raw: str) -> str:

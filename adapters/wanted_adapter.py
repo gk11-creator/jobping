@@ -81,15 +81,29 @@ class WantedAdapter(BaseAdapter):
 
         반환값: (URL, match_type, matched_keyword)
         """
+        category = user_profile.get("category", "")
         category_id = self._get_category_id(user_profile)
         employment_type = user_profile.get("employment_type", "")
         career = "0" if ("신입" in employment_type or "인턴" in employment_type) else "1"
 
         if category_id:
             url = f"{BASE_URL}/wdlist/{category_id}?job_sort=job.latest_order&years={career}&locations=all&page={page}"
+
+            # "디자인" 대분류 코드(511)는 UI/UX·그래픽·브랜드·패키지·제품/가구디자인
+            # 등 서로 완전히 다른 세부 디자인 분야를 전부 하나로 뭉뚱그려서 반환한다.
+            # 사용자가 "디자인 > 제품/가구디자인"처럼 세부분야를 명시했다면, 코드
+            # 조회는 그대로 쓰되(적어도 "디자인 관련 공고"라는 큰 풀 안에서 찾는
+            # 것이므로 완전 무관보다는 낫다) 세부분야 키워드로 제목 관련성 검증을
+            # 추가로 받도록 match_type을 "keyword"로 낮춘다.
+            # (구재정 "가구디자인" 케이스: 511 하나로만 걸렀더니 브랜드/패키지/
+            # 글로우엠 디자이너만 나오고 가구디자인 관련은 하나도 안 나온 것으로 확인됨)
+            if category_id == "511" and " > " in category:
+                keyword = get_search_keyword(category)
+                return url, "keyword", keyword
+
             return url, "category", ""
 
-        keyword = get_search_keyword(user_profile.get("category", ""))
+        keyword = get_search_keyword(category)
         encoded_keyword = urllib.parse.quote(keyword)
         url = f"{BASE_URL}/search?query={encoded_keyword}&tab=position"
         return url, "keyword", keyword
