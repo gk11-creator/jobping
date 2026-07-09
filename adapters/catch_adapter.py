@@ -99,6 +99,15 @@ class CatchAdapter(BaseAdapter):
         url = self._get_search_url(user_profile, page)
         print(f"[캐치] 접속: {url[:80]}...")
 
+        # 이 검색이 정밀 카테고리(duty) 기반이었는지, 키워드 폴백이었는지 기록
+        duty = self._get_duty(user_profile)
+        if duty:
+            match_type = "category"
+            matched_keyword = None
+        else:
+            match_type = "keyword"
+            matched_keyword = get_search_keyword(user_profile.get("category", ""))
+
         try:
             await self._goto_safe(url)
             await asyncio.sleep(3)
@@ -141,16 +150,21 @@ class CatchAdapter(BaseAdapter):
                     if "비영리법인" in company or "공공기관" in company:
                         continue
 
-                    jobs.append({
+                    job = {
                         "title": title,
                         "company": company,
+                        "category": user_profile.get("category", ""),
                         "location": user_profile.get("location", ""),
                         "deadline": deadline,
                         "source": self.SOURCE,
                         "source_url": source_url,
                         "rating": None,
                         "job_type": job_type,
-                    })
+                        "match_type": match_type,
+                    }
+                    if matched_keyword:
+                        job["_matched_keyword"] = matched_keyword
+                    jobs.append(job)
                 except Exception:
                     continue
 

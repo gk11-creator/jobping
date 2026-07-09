@@ -72,23 +72,27 @@ class WantedAdapter(BaseAdapter):
                 return code
         return ""  # 매칭 실패시 빈 값 (예전처럼 "518"=IT개발로 고정하지 않음)
 
-    def _get_search_url(self, user_profile: dict, page: int = 1) -> str:
+    def _get_search_url_and_type(self, user_profile: dict, page: int = 1) -> tuple[str, str, str]:
         """
-        카테고리가 CATEGORY_MAP에 등록돼 있으면 정밀 카테고리 리스트(wdlist)를 사용하고,
+        카테고리가 CATEGORY_MAP에 등록돼 있으면 정밀 필터(wdlist)를 사용하고,
         등록돼 있지 않으면 원티드의 실제 검색 페이지(search?query=...&tab=position)로
         폴백한다. (예전엔 미등록 카테고리가 전부 IT개발[518]로 고정되는 문제가 있었음
         — 김태진(법무/경영지원) 케이스로 확인됨)
+
+        반환값: (URL, match_type, matched_keyword)
         """
         category_id = self._get_category_id(user_profile)
         employment_type = user_profile.get("employment_type", "")
         career = "0" if ("신입" in employment_type or "인턴" in employment_type) else "1"
 
         if category_id:
-            return f"{BASE_URL}/wdlist/{category_id}?job_sort=job.latest_order&years={career}&locations=all&page={page}"
+            url = f"{BASE_URL}/wdlist/{category_id}?job_sort=job.latest_order&years={career}&locations=all&page={page}"
+            return url, "category", ""
 
         keyword = get_search_keyword(user_profile.get("category", ""))
         encoded_keyword = urllib.parse.quote(keyword)
-        return f"{BASE_URL}/search?query={encoded_keyword}&tab=position"
+        url = f"{BASE_URL}/search?query={encoded_keyword}&tab=position"
+        return url, "keyword", keyword
 
     def _parse_deadline(self, raw: str) -> str:
         try:
@@ -125,7 +129,7 @@ class WantedAdapter(BaseAdapter):
             await self._refresh_session()
             self._session_valid = True
 
-        url = self._get_search_url(user_profile, page)
+        url, match_type, matched_keyword = self._get_search_url_and_type(user_profile, page)
         print(f"[원티드] 접속: {url[:80]}...")
 
         try:
@@ -177,7 +181,7 @@ class WantedAdapter(BaseAdapter):
                 if emp_type_raw == "parttime":
                     continue
 
-                job_candidates.append({
+                candidate = {
                     "title": title,
                     "company": company,
                     "location": location or user_profile.get("location", ""),
@@ -185,7 +189,11 @@ class WantedAdapter(BaseAdapter):
                     "source": self.SOURCE,
                     "source_url": source_url,
                     "rating": None,
-                })
+                    "match_type": match_type,
+                }
+                if matched_keyword:
+                    candidate["_matched_keyword"] = matched_keyword
+                job_candidates.append(candidate)
 
             jobs = []
             for candidate in job_candidates[:15]:

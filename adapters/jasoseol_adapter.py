@@ -5,6 +5,7 @@ import asyncio
 import re
 from datetime import datetime, date
 from adapters.base_adapter import BaseAdapter
+from adapters.category_map import get_search_keyword
 
 BASE_URL = "https://jasoseol.com"
 
@@ -32,15 +33,18 @@ class JasoseolAdapter(BaseAdapter):
         await asyncio.sleep(2)
         print("[자소설닷컴] 세션 재획득 완료")
 
-    def _get_keyword(self, user_profile: dict) -> str:
+    def _get_keyword_and_type(self, user_profile: dict) -> tuple[str, str]:
+        """
+        등록된 카테고리 키워드가 있으면 (키워드, "category")를 반환하고,
+        없으면 (공용 검색 키워드, "keyword")를 반환한다.
+        (예전엔 스킬 목록[0]로 폴백해서 "MS 엑셀" 같은 무관한 검색어가
+        나가는 문제가 있었음 — 김태진 케이스로 확인됨)
+        """
         category = user_profile.get("category", "")
-        skills = user_profile.get("skills", [])
         for key, keyword in CATEGORY_KEYWORD_MAP.items():
             if key in category:
-                return keyword
-        if skills:
-            return skills[0]
-        return ""
+                return keyword, "category"
+        return get_search_keyword(category), "keyword"
 
     def _parse_deadline(self, raw: str) -> str:
         """26/07/09 형태를 2026-07-09로 변환"""
@@ -57,7 +61,7 @@ class JasoseolAdapter(BaseAdapter):
         return ""
 
     def _get_search_url(self, user_profile: dict, page: int = 1) -> str:
-        keyword = self._get_keyword(user_profile)
+        keyword, _ = self._get_keyword_and_type(user_profile)
         return f"{BASE_URL}/search?q={keyword}&page={page}"
 
     async def fetch_job_list(self, user_profile: dict, page: int = 1) -> list[dict]:
@@ -67,6 +71,9 @@ class JasoseolAdapter(BaseAdapter):
 
         url = self._get_search_url(user_profile, page)
         print(f"[자소설닷컴] 접속: {url[:80]}...")
+
+        keyword, match_type = self._get_keyword_and_type(user_profile)
+        matched_keyword = keyword if match_type == "keyword" else None
 
         try:
             await self._goto_safe(url)
@@ -112,15 +119,20 @@ class JasoseolAdapter(BaseAdapter):
                     if not title:
                         continue
 
-                    jobs.append({
+                    job = {
                         "title": title,
                         "company": company,
+                        "category": user_profile.get("category", ""),
                         "location": user_profile.get("location", ""),
                         "deadline": deadline,
                         "source": self.SOURCE,
                         "source_url": source_url,
                         "rating": None,
-                    })
+                        "match_type": match_type,
+                    }
+                    if matched_keyword:
+                        job["_matched_keyword"] = matched_keyword
+                    jobs.append(job)
                 except Exception:
                     continue
 

@@ -61,6 +61,7 @@ class JobKoreaAdapter(BaseAdapter):
             "tabindex": "0", "profile": "0",
         }
         return {k: v for k, v in payload.items() if v != ""}
+
     async def fetch_job_list(self, user_profile: dict, page: int = 1) -> list[dict]:
         if not self._session_valid:
             await self._refresh_session()
@@ -90,11 +91,22 @@ class JobKoreaAdapter(BaseAdapter):
         if not html:
             return []
 
-        jobs = self._parse_html(html, user_profile)
+        # 이 검색이 정밀 카테고리(duty) 기반이었는지, 키워드 폴백이었는지 기록
+        # → 오케스트레이터 정렬과 사전필터 단계에서 신뢰도 판단에 사용
+        category = user_profile.get("category", "")
+        duty_codes = DUTY_MAP.get(category, [])
+        if duty_codes:
+            match_type = "category"
+            matched_keyword = None
+        else:
+            match_type = "keyword"
+            matched_keyword = get_search_keyword(category)
+
+        jobs = self._parse_html(html, user_profile, match_type, matched_keyword)
         await self._delay()
         return jobs
 
-    def _parse_html(self, html: str, user_profile: dict) -> list[dict]:
+    def _parse_html(self, html: str, user_profile: dict, match_type: str = "category", matched_keyword: Optional[str] = None) -> list[dict]:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
         jobs = []
@@ -119,7 +131,7 @@ class JobKoreaAdapter(BaseAdapter):
                         employment_type = text
                 date_tag = row.select_one("td.odd .date")
                 deadline_raw = date_tag.get_text(strip=True) if date_tag else ""
-                jobs.append({
+                job = {
                     "title": title, "company": company,
                     "category": user_profile.get("category", ""),
                     "employment_type": employment_type or user_profile.get("employment_type", "정규직"),
@@ -127,8 +139,12 @@ class JobKoreaAdapter(BaseAdapter):
                     "deadline": self._parse_deadline(deadline_raw),
                     "source": "잡코리아", "source_url": source_url,
                     "rating": None, "competition_ratio": None,
+                    "match_type": match_type,
                     "_raw": {"gno": gno, "deadline_raw": deadline_raw, "etc": etc_texts}
-                })
+                }
+                if matched_keyword:
+                    job["_matched_keyword"] = matched_keyword
+                jobs.append(job)
             except Exception as e:
                 print(f"[잡코리아] 파싱 오류: {e}")
         return jobs

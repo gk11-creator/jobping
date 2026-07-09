@@ -134,7 +134,7 @@ class LinkareerAdapter(BaseAdapter):
             if not response_data:
                 return []
             nodes = response_data.get("data", {}).get("activitySearch", {}).get("nodes", [])
-            jobs = [self._normalize_search(node, user_profile) for node in nodes]
+            jobs = [self._normalize_search(node, user_profile, keyword) for node in nodes]
 
         jobs = [j for j in jobs if j]
         await self._delay()
@@ -167,6 +167,7 @@ class LinkareerAdapter(BaseAdapter):
                 "source": "링커리어",
                 "source_url": f"{BASE_URL}/activity/{activity_id}",
                 "rating": None, "competition_ratio": None,
+                "match_type": "category",
                 "_raw": {
                     "id": activity_id, "job_types": job_types,
                     "scrap_count": node.get("scrapCount", 0),
@@ -177,7 +178,7 @@ class LinkareerAdapter(BaseAdapter):
             print(f"[링커리어] 파싱 오류: {e}")
             return None
 
-    def _normalize_search(self, node: dict, user_profile: dict) -> Optional[dict]:
+    def _normalize_search(self, node: dict, user_profile: dict, matched_keyword: str) -> Optional[dict]:
         """
         키워드 검색(gqlActivitySearchResult) 응답 파싱.
         RecruitList와 달리 실제 공고 데이터가 node["source"] 안에 한 겹 더 감싸져 있음.
@@ -210,6 +211,8 @@ class LinkareerAdapter(BaseAdapter):
                 "source": "링커리어",
                 "source_url": f"{BASE_URL}/activity/{activity_id}",
                 "rating": None, "competition_ratio": None,
+                "match_type": "keyword",
+                "_matched_keyword": matched_keyword,
                 "_raw": {
                     "id": activity_id, "job_types": job_types,
                     "scrap_count": source.get("scrapCount", 0),

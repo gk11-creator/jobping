@@ -44,12 +44,14 @@ class SuperookieAdapter(BaseAdapter):
         self._session_valid = True
         print("[슈퍼루키] 세션 재획득 완료")
 
-    def _build_search_params(self, user_profile: dict) -> str:
+    def _build_search_params(self, user_profile: dict) -> tuple[str, str, Optional[str]]:
         """
         카테고리가 duty_group에 등록돼 있으면 정밀 필터(duty_group)를 사용하고,
         등록돼 있지 않으면 "IT 전 직군"으로 고정하는 대신 자유 검색어(q=)를 사용한다.
         (예전엔 미등록 카테고리가 전부 IT 전 직군[48개]으로 고정되는 문제가
         있었음 — 비IT 지망자 전원에게 영향을 준 것으로 확인됨)
+
+        반환값: (쿼리스트링, match_type, matched_keyword)
         """
         category = user_profile.get("category", "")
         duty_groups = DUTY_GROUP_MAP.get(category, [])
@@ -58,18 +60,18 @@ class SuperookieAdapter(BaseAdapter):
             params = f"q=&sort=&status=&job_level%5B%5D={JOB_LEVEL_INTERN}&job_type=job"
             for dg in duty_groups:
                 params += f"&duty_group%5B%5D={dg}"
+            return params, "category", None
         else:
             keyword = get_search_keyword(category)
             encoded_keyword = urllib.parse.quote(keyword)
             params = f"q={encoded_keyword}&sort=&status=&job_level%5B%5D={JOB_LEVEL_INTERN}&job_type=job"
-
-        return params
+            return params, "keyword", keyword
 
     async def fetch_job_list(self, user_profile: dict, page: int = 1) -> list[dict]:
         if not self._session_valid:
             await self._refresh_session()
 
-        params = self._build_search_params(user_profile)
+        params, match_type, matched_keyword = self._build_search_params(user_profile)
         url = f"{SEARCH_URL}?{params}"
         print(f"[슈퍼루키] 접속: {url[:80]}...")
 
@@ -88,12 +90,12 @@ class SuperookieAdapter(BaseAdapter):
             print(f"[슈퍼루키] 콘텐츠 추출 실패: {e}")
             return []
 
-        jobs = self._parse_html(html, user_profile)
+        jobs = self._parse_html(html, user_profile, match_type, matched_keyword)
         print(f"[슈퍼루키] {len(jobs)}개 파싱 완료")
         await asyncio.sleep(3)
         return jobs
 
-    def _parse_html(self, html: str, user_profile: dict) -> list[dict]:
+    def _parse_html(self, html: str, user_profile: dict, match_type: str = "category", matched_keyword: Optional[str] = None) -> list[dict]:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
         jobs = []
@@ -124,7 +126,7 @@ class SuperookieAdapter(BaseAdapter):
                 deadline_tag = item.select_one(".color-gray.mobile-text-12")
                 deadline_raw = deadline_tag.get_text(strip=True) if deadline_tag else ""
 
-                jobs.append({
+                job = {
                     "title": title,
                     "company": company,
                     "category": user_profile.get("category", ""),
@@ -135,8 +137,12 @@ class SuperookieAdapter(BaseAdapter):
                     "source_url": source_url,
                     "rating": None,
                     "competition_ratio": None,
+                    "match_type": match_type,
                     "_raw": {"deadline_raw": deadline_raw}
-                })
+                }
+                if matched_keyword:
+                    job["_matched_keyword"] = matched_keyword
+                jobs.append(job)
             except Exception as e:
                 print(f"[슈퍼루키] 파싱 오류: {e}")
         return jobs
