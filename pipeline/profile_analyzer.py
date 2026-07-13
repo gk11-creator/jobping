@@ -104,17 +104,119 @@ def _default_profile(subscriber: dict) -> dict:
     }
 
 
+# ─────────────────────────────────────────
+# GPT 매칭 전 코드 레벨 사전 필터
+# ─────────────────────────────────────────
+EXCLUDE_TITLE_KEYWORDS = [
+    "파트", "홀서빙", "세척", "주방", "시급", "알바", "아르바이트",
+    "조리", "기능직",
+    "학원", "과외", "교육생", "수강생", "부트캠프", "국비지원", "국비",
+    "영커리언스", "청년인턴", "산업은행", "기업은행",
+]
+
+
+def _title_matches_keyword(title: str, keyword: str) -> bool:
+    """
+    키워드 검색 폴백으로 가져온 공고의 제목에, 실제로 그 검색 키워드(의 일부)가
+    포함돼 있는지 확인한다.
+    """
+    if not keyword:
+        return True
+
+    if keyword in title:
+        return True
+
+    tokens = [t for t in keyword.split() if t]
+    if any(t in title for t in tokens):
+        return True
+
+    if len(keyword) >= 4:
+        root = keyword[:2]
+        if root in title:
+            return True
+
+    return False
+
+
+def prefilter_by_category(jobs: list[dict], categories: list[str]) -> list[dict]:
+    """
+    GPT 매칭 호출 전, 코드 레벨에서 명백히 무관하거나 제외 대상인 공고를 걸러낸다.
+    """
+    if not jobs:
+        return jobs
+
+    filtered = []
+    excluded_count = 0
+    keyword_irrelevant_count = 0
+
+    for job in jobs:
+        title = job.get("title", "")
+
+        if any(kw in title for kw in EXCLUDE_TITLE_KEYWORDS):
+            excluded_count += 1
+            continue
+
+        if job.get("match_type") == "keyword":
+            matched_keyword = job.get("_matched_keyword", "")
+            if not _title_matches_keyword(title, matched_keyword):
+                keyword_irrelevant_count += 1
+                continue
+
+        filtered.append(job)
+
+    total_removed = excluded_count + keyword_irrelevant_count
+    if total_removed:
+        print(
+            f"[사전필터] 제외키워드 {excluded_count}개 + 키워드무관 {keyword_irrelevant_count}개 "
+            f"제거 ({len(jobs)} → {len(filtered)}개)"
+        )
+
+    return filtered
+
+
+def _interleave_by_category(jobs_by_category: dict, categories: list[str]) -> list[dict]:
+    """
+    카테고리별로 이미 정렬된 리스트들을 라운드로빈 방식으로 섞는다.
+
+    예전엔 카테고리 순서대로 리스트를 단순히 이어붙였는데, 그러면 사용자가
+    여러 카테고리를 신청했을 때 첫 번째 카테고리 하나가 결과를 60개 넘게
+    채워버리는 경우 나머지 카테고리들은 jobs[:60] 컷에 아예 안 들어가서
+    GPT 눈에 전혀 안 보이는 문제가 있었다 (박지훈 케이스로 확인됨 — 3개
+    카테고리 중 "마케팅/광고"가 첫 번째라서, "제조/QC/QA"·"서비스/고객지원"
+    관련 공고는 최종 10개에 거의 반영이 안 됨).
+
+    라운드로빈으로 카테고리 A, B, C의 항목을 A,B,C,A,B,C... 순서로 배치하면,
+    각 카테고리별 내부 우선순위(match_type/마감일 기준 정렬)는 유지하면서도
+    특정 카테고리가 앞자리를 독점하는 것을 막을 수 있다.
+    """
+    queues = [list(jobs_by_category.get(c, [])) for c in categories]
+    interleaved = []
+    while any(queues):
+        for q in queues:
+            if q:
+                interleaved.append(q.pop(0))
+    return interleaved
+
+
 async def score_jobs(user_profile: dict, jobs: list[dict], top_n: int = 10) -> list[dict]:
     if not jobs:
         return []
 
+    debug_titles = [j.get("title", "")[:20] for j in jobs[:60]]
+    print(f"[디버그] GPT에 전달되는 상위 60개 제목: {debug_titles}")
+
     jobs_summary = []
     for i, job in enumerate(jobs[:60]):
+        # 같은 공고가 여러 카테고리 패스에서 중복 발견된 경우 병합된 카테고리
+        # 목록(_matched_categories)이 있으면 그걸 우선 사용한다.
+        matched_categories = job.get("_matched_categories") or [job.get("category", "")]
+        category_display = ", ".join(c for c in matched_categories if c)
+
         jobs_summary.append({
             "idx": i,
             "title": job.get("title", ""),
             "company": job.get("company", ""),
-            "category": job.get("category", ""),
+            "category": category_display,
             "employment_type": job.get("employment_type", ""),
             "location": job.get("location", ""),
             "deadline": job.get("deadline", ""),
@@ -162,6 +264,10 @@ async def score_jobs(user_profile: dict, jobs: list[dict], top_n: int = 10) -> l
 - 희망직군({categories_str})과 전혀 무관한 직군
 - "영커리언스", "청년인턴", "산업은행", "기업은행" 관련 공고
 위 조건에 해당하면 반드시 제외하고 다른 공고를 선택할 것.
+
+[다중 직군 안내]
+- 희망직군이 여러 개인 경우, 특정 직군에 편중되지 않고 각 직군에서 고르게
+  후보가 선정되도록 균형을 고려할 것.
 
 [추천 이유 작성 규칙]
 - 반드시 이 사람의 스킬, 전공, 경험을 구체적으로 언급할 것
@@ -212,20 +318,40 @@ async def run_pipeline(subscribers: list[dict]) -> list[dict]:
         user_profile = await analyze_profile(subscriber)
         categories = user_profile.get("categories", [user_profile.get("category", "")])
 
-        all_jobs = []
-        seen_urls = set()
+        # 카테고리별로 결과를 따로 보관한다 (나중에 라운드로빈으로 섞기 위함).
+        jobs_by_category: dict = {}
+        seen_urls: dict = {}  # url -> 이미 저장된 job (동일 URL 재발견시 카테고리만 병합)
 
         for category in categories:
             profile_for_category = {**user_profile, "category": category}
             orchestrator = Orchestrator(headless=True)
             jobs = await orchestrator.run(profile_for_category, max_pages=2)
 
-            # 카테고리별 중복 제거
+            category_jobs = []
             for job in jobs:
                 url = job.get("source_url", "")
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    all_jobs.append(job)
+                if not url:
+                    continue
+
+                if url in seen_urls:
+                    # 이미 다른 카테고리 패스에서 찾은 공고 — 완전히 버리지 않고
+                    # "이 카테고리에도 해당한다"는 정보만 병합한다.
+                    existing = seen_urls[url]
+                    matched = existing.setdefault(
+                        "_matched_categories", [existing.get("category", "")]
+                    )
+                    if category not in matched:
+                        matched.append(category)
+                    continue
+
+                job["_matched_categories"] = [category]
+                seen_urls[url] = job
+                category_jobs.append(job)
+
+            jobs_by_category[category] = category_jobs
+
+        # 라운드로빈으로 섞어서 특정 카테고리가 순서상 유리해지는 것을 방지
+        all_jobs = _interleave_by_category(jobs_by_category, categories)
 
         # 마감 지난 공고 제거
         today = date.today()
@@ -234,6 +360,9 @@ async def run_pipeline(subscribers: list[dict]) -> list[dict]:
             if not j.get("deadline") or
             datetime.strptime(j["deadline"], "%Y-%m-%d").date() >= today
         ]
+
+        # GPT 매칭 전 코드 레벨 사전 필터
+        all_jobs = prefilter_by_category(all_jobs, categories)
 
         matched_jobs = await score_jobs(user_profile, all_jobs, top_n=10)
 
