@@ -3,6 +3,7 @@
 """
 import asyncio
 import re
+import urllib.parse
 from datetime import datetime, timedelta
 from typing import Optional
 from adapters.base_adapter import BaseAdapter
@@ -16,17 +17,16 @@ DUTY_MAP = {
     "IT개발 > 보안": ["1000234"], "IT개발 > QA": ["1000235"],
     "IT개발 > 게임": ["1000231"], "기획/전략": ["1000101"],
     "마케팅/광고": ["1000103"], "디자인": ["1000201"], "영업": ["1000301"],
-    # 아래 두 항목은 잡코리아에서 "법무·사무·총무" 하나의 duty로 묶여 있음 (직접 확인됨)
     "법무/컴플라이언스": ["1000065"], "경영지원/총무": ["1000065"],
-    # 아래는 profile_analyzer.py 마스터 카테고리 목록의 실제 문자열과 정확히
-    # 일치시키기 위한 항목. DUTY_MAP.get(category, [])는 완전 일치(exact match)만
-    # 확인하므로, 위의 "영업"/"IT개발 > 안드로이드"/"IT개발 > 데브옵스/인프라"
-    # 같은 축약 키는 마스터 목록의 "영업/영업관리"/"IT개발 > Android"/
-    # "IT개발 > DevOps"와 문자열이 달라 절대 매칭되지 않고 항상 키워드 검색으로
-    # 새고 있었음 (장세욱 케이스로 확인됨). 같은 duty 코드를 정확한 이름으로도 등록.
     "영업/영업관리": ["1000301"],
     "IT개발 > Android": ["1000232"],
     "IT개발 > DevOps": ["1000236"],
+    # 주의: 이 DUTY_MAP의 duty 코드들은 잡코리아 사이트 개편 이전 체계일 가능성이
+    # 있음이 확인됨 (2026-07 기준 잡코리아 자체 필터 메뉴는 "기획·전략",
+    # "법무·사무·총무", "AI·개발·데이터", "디자인" 등 완전히 다른 대분류 체계를
+    # 씀). 이 코드들이 실제로도 정확한 결과를 주는지는 별도 검증이 필요하며,
+    # 우선 "구재정(가구디자인)" 사건에서 확인된 "키워드 검색 자체가 작동 안 함"
+    # 문제만 이번에 수정함.
 }
 LOCAL_MAP = {
     "서울":"I000","경기":"I001","인천":"I002","부산":"I003","대구":"I004",
@@ -37,6 +37,12 @@ LOCAL_MAP = {
 JOBTYPE_MAP = {"정규직":"1","계약직":"2","인턴":"3","파견직":"4","아르바이트":"5"}
 BASE_URL = "https://www.jobkorea.co.kr"
 API_URL = f"{BASE_URL}/Recruit/Home/_GI_List/"
+# 사람이 실제로 검색할 때 쓰는 검색 페이지 (내부 _GI_List API는
+# condition[keyword]를 아예 무시하는 것으로 확인됨 — 구재정 "가구디자인"
+# 케이스에서 요청은 정확히 나갔는데 결과는 키워드와 무관한 전체 목록이
+# 돌아온 것으로 확인됨). 이 페이지는 실제로 stext 검색어를 반영한
+# 서버 렌더링 결과를 준다 (jobkorea.co.kr/Search?stext=데이터분석 테스트로 확인).
+SEARCH_URL = f"{BASE_URL}/Search"
 
 
 class JobKoreaAdapter(BaseAdapter):
@@ -52,19 +58,11 @@ class JobKoreaAdapter(BaseAdapter):
         category = user_profile.get("category", "")
         duty_codes = DUTY_MAP.get(category, [])
 
-        # duty 코드가 없으면 카테고리 기반 검색 키워드로 폴백
-        # (예전엔 스킬 목록[0]을 썼는데, "MS 엑셀" 같은 무관한 스킬이 검색어로
-        #  나가는 문제가 있어 카테고리 자체를 키워드로 변환해서 사용)
-        keyword = ""
-        if not duty_codes:
-            keyword = get_search_keyword(category)
-
         payload = {
             "condition[duty]": ",".join(duty_codes),
             "condition[local]": LOCAL_MAP.get(user_profile.get("location", "서울"), "I000"),
             "condition[jobtype]": JOBTYPE_MAP.get(user_profile.get("employment_type", ""), ""),
             "condition[menucode]": "",
-            "condition[keyword]": keyword,  # 키워드 검색 추가
             "page": str(page), "pagesize": "40",
             "order": "20", "direct": "0", "onePick": "0", "confirm": "0",
             "tabindex": "0", "profile": "0",
@@ -75,6 +73,23 @@ class JobKoreaAdapter(BaseAdapter):
         if not self._session_valid:
             await self._refresh_session()
 
+        category = user_profile.get("category", "")
+        duty_codes = DUTY_MAP.get(category, [])
+
+        if duty_codes:
+            jobs = await self._fetch_by_duty(user_profile, page, duty_codes)
+            for j in jobs:
+                j["match_type"] = "category"
+            return jobs
+        else:
+            keyword = get_search_keyword(category)
+            jobs = await self._fetch_by_search_page(keyword, page, user_profile)
+            for j in jobs:
+                j["match_type"] = "keyword"
+                j["_matched_keyword"] = keyword
+            return jobs
+
+    async def _fetch_by_duty(self, user_profile: dict, page: int, duty_codes: list) -> list[dict]:
         payload = self._build_payload(user_profile, page)
         payload_str = "&".join(f"{k}={v}" for k, v in payload.items())
 
@@ -100,22 +115,28 @@ class JobKoreaAdapter(BaseAdapter):
         if not html:
             return []
 
-        # 이 검색이 정밀 카테고리(duty) 기반이었는지, 키워드 폴백이었는지 기록
-        # → 오케스트레이터 정렬과 사전필터 단계에서 신뢰도 판단에 사용
-        category = user_profile.get("category", "")
-        duty_codes = DUTY_MAP.get(category, [])
-        if duty_codes:
-            match_type = "category"
-            matched_keyword = None
-        else:
-            match_type = "keyword"
-            matched_keyword = get_search_keyword(category)
-
-        jobs = self._parse_html(html, user_profile, match_type, matched_keyword)
+        jobs = self._parse_duty_html(html, user_profile)
         await self._delay()
         return jobs
 
-    def _parse_html(self, html: str, user_profile: dict, match_type: str = "category", matched_keyword: Optional[str] = None) -> list[dict]:
+    async def _fetch_by_search_page(self, keyword: str, page: int, user_profile: dict) -> list[dict]:
+        encoded_keyword = urllib.parse.quote(keyword)
+        url = f"{SEARCH_URL}?stext={encoded_keyword}&tabType=recruit&Page_No={page}"
+        print(f"[잡코리아][디버그] 검색페이지 접속: {url}")
+
+        try:
+            await self._goto_safe(url)
+            await asyncio.sleep(3)
+            html = await self.page.content()
+        except Exception as e:
+            print(f"[잡코리아] 검색페이지 접속 실패: {e}")
+            return []
+
+        jobs = self._parse_search_html(html, user_profile, keyword)
+        await self._delay()
+        return jobs
+
+    def _parse_duty_html(self, html: str, user_profile: dict) -> list[dict]:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
         jobs = []
@@ -140,7 +161,7 @@ class JobKoreaAdapter(BaseAdapter):
                         employment_type = text
                 date_tag = row.select_one("td.odd .date")
                 deadline_raw = date_tag.get_text(strip=True) if date_tag else ""
-                job = {
+                jobs.append({
                     "title": title, "company": company,
                     "category": user_profile.get("category", ""),
                     "employment_type": employment_type or user_profile.get("employment_type", "정규직"),
@@ -148,14 +169,85 @@ class JobKoreaAdapter(BaseAdapter):
                     "deadline": self._parse_deadline(deadline_raw),
                     "source": "잡코리아", "source_url": source_url,
                     "rating": None, "competition_ratio": None,
-                    "match_type": match_type,
                     "_raw": {"gno": gno, "deadline_raw": deadline_raw, "etc": etc_texts}
-                }
-                if matched_keyword:
-                    job["_matched_keyword"] = matched_keyword
-                jobs.append(job)
+                })
             except Exception as e:
                 print(f"[잡코리아] 파싱 오류: {e}")
+        return jobs
+
+    def _parse_search_html(self, html: str, user_profile: dict, keyword: str) -> list[dict]:
+        """
+        실제 검색 페이지(/Search?stext=...) 파싱.
+        이 페이지는 기존 duty 필터용 내부 API(_GI_List)와 완전히 다른 템플릿을
+        써서, 정확한 CSS 클래스명이 아직 확인되지 않았다. 그래서 사이트 전역에서
+        공통으로 쓰이는 공고 상세페이지 URL 패턴(/Recruit/GI_Read/{숫자})을
+        기준으로 링크를 모아 파싱한다 (원티드 어댑터에서 쓴 것과 같은 방식).
+
+        디버그: 처음 실행 시 실제 HTML 스니펫을 출력해서, 이 파싱 결과가
+        기대와 다르면 실제 구조를 보고 선택자를 다듬을 수 있게 한다.
+        """
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+
+        job_links = soup.select('a[href*="/Recruit/GI_Read/"]')
+
+        if job_links:
+            first_href = job_links[0].get("href", "")
+            idx = html.find(first_href)
+            snippet = html[max(0, idx - 400): idx + 600]
+            print(f"[잡코리아][디버그] 검색결과 링크 {len(job_links)}개 발견, HTML 스니펫:\n{snippet}")
+        else:
+            print(f"[잡코리아][디버그] 검색결과 링크 0개 — HTML 응답 길이: {len(html)}자")
+            return []
+
+        groups: dict = {}
+        for a in job_links:
+            href = a.get("href", "")
+            m = re.search(r"/Recruit/GI_Read/(\d+)", href)
+            if not m:
+                continue
+            gno = m.group(1)
+            groups.setdefault(gno, []).append(a)
+
+        jobs = []
+        for gno, anchors in groups.items():
+            try:
+                text_anchors = [a for a in anchors if a.get_text(strip=True)]
+                if not text_anchors:
+                    continue
+                text_anchors.sort(key=lambda a: len(a.get_text(strip=True)), reverse=True)
+                title = text_anchors[0].get_text(strip=True)
+                company = ""
+                for a in text_anchors[1:]:
+                    t = a.get_text(strip=True)
+                    if t and t != title:
+                        company = t
+                        break
+
+                href = text_anchors[0].get("href", "")
+                source_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+
+                if not title:
+                    continue
+
+                jobs.append({
+                    "title": title,
+                    "company": company,
+                    "category": user_profile.get("category", ""),
+                    "employment_type": user_profile.get("employment_type", ""),
+                    "location": user_profile.get("location", ""),
+                    "deadline": None,
+                    "source": "잡코리아",
+                    "source_url": source_url,
+                    "rating": None, "competition_ratio": None,
+                    "_raw": {"gno": gno},
+                })
+            except Exception as e:
+                print(f"[잡코리아] 검색결과 파싱 오류: {e}")
+
+        print(f"[잡코리아][디버그] 검색페이지에서 파싱된 공고 {len(jobs)}개 (제목 샘플): "
+              f"{[j['title'][:30] for j in jobs[:10]]}")
+
         return jobs
 
     def _parse_deadline(self, raw: str) -> Optional[str]:
