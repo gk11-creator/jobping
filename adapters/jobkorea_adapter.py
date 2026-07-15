@@ -21,12 +21,6 @@ DUTY_MAP = {
     "영업/영업관리": ["1000301"],
     "IT개발 > Android": ["1000232"],
     "IT개발 > DevOps": ["1000236"],
-    # 주의: 이 DUTY_MAP의 duty 코드들은 잡코리아 사이트 개편 이전 체계일 가능성이
-    # 있음이 확인됨 (2026-07 기준 잡코리아 자체 필터 메뉴는 "기획·전략",
-    # "법무·사무·총무", "AI·개발·데이터", "디자인" 등 완전히 다른 대분류 체계를
-    # 씀). 이 코드들이 실제로도 정확한 결과를 주는지는 별도 검증이 필요하며,
-    # 우선 "구재정(가구디자인)" 사건에서 확인된 "키워드 검색 자체가 작동 안 함"
-    # 문제만 이번에 수정함.
 }
 LOCAL_MAP = {
     "서울":"I000","경기":"I001","인천":"I002","부산":"I003","대구":"I004",
@@ -37,12 +31,14 @@ LOCAL_MAP = {
 JOBTYPE_MAP = {"정규직":"1","계약직":"2","인턴":"3","파견직":"4","아르바이트":"5"}
 BASE_URL = "https://www.jobkorea.co.kr"
 API_URL = f"{BASE_URL}/Recruit/Home/_GI_List/"
-# 사람이 실제로 검색할 때 쓰는 검색 페이지 (내부 _GI_List API는
-# condition[keyword]를 아예 무시하는 것으로 확인됨 — 구재정 "가구디자인"
-# 케이스에서 요청은 정확히 나갔는데 결과는 키워드와 무관한 전체 목록이
-# 돌아온 것으로 확인됨). 이 페이지는 실제로 stext 검색어를 반영한
-# 서버 렌더링 결과를 준다 (jobkorea.co.kr/Search?stext=데이터분석 테스트로 확인).
 SEARCH_URL = f"{BASE_URL}/Search"
+
+JOB_LINK_PATTERN = re.compile(r"/Recruit/GI_Read/(\d+)")
+
+DEADLINE_TEXT_PATTERN = re.compile(
+    r"(오늘\s*마감|내일\s*마감|모레\s*마감|상시\s*채용|채용\s*시\s*마감|"
+    r"~\s*\d{1,2}\s*/\s*\d{1,2}\s*(?:\([가-힣]\))?|D-\d+)"
+)
 
 
 class JobKoreaAdapter(BaseAdapter):
@@ -175,41 +171,70 @@ class JobKoreaAdapter(BaseAdapter):
                 print(f"[잡코리아] 파싱 오류: {e}")
         return jobs
 
+    def _extract_deadline_near(self, anchor, own_gno: str, debug: bool = False) -> str:
+        """
+        마감일이 정확히 어느 태그/클래스에 있는지 확인이 안 돼서, 앵커(공고
+        제목 링크)의 조상 요소를 최대 6단계까지 올라가며 텍스트에서 마감일
+        패턴을 찾는다.
+
+        중요: 컨테이너 안에 이 공고(own_gno)가 아닌 다른 공고의 링크가 섞여
+        있으면, 그 단계는 여러 공고 정보를 뭉쳐서 담고 있다는 뜻이라 신뢰하지
+        않고 탐색을 중단한다 (실측 결과 조상 4단계에서 서로 다른 두 공고가
+        동일한 마감일을 반환하는 오염 사례가 확인됨). 잘못된 마감일을 주는
+        것보다는 마감일을 비워두는 게 안전하다.
+        """
+        container = anchor
+        for level in range(6):
+            if container.parent is None:
+                break
+            container = container.parent
+
+            inner_links = container.find_all("a", href=JOB_LINK_PATTERN)
+            inner_gnos = set()
+            for a in inner_links:
+                m = JOB_LINK_PATTERN.search(a.get("href", ""))
+                if m:
+                    inner_gnos.add(m.group(1))
+
+            if inner_gnos - {own_gno}:
+                if debug:
+                    print(f"[잡코리아][디버그] 조상 {level+1}단계에서 다른 공고 혼입 감지 "
+                          f"({inner_gnos - {own_gno}}) — 탐색 중단, 마감일 비움")
+                return ""
+
+            text = container.get_text(" ", strip=True)
+            m = DEADLINE_TEXT_PATTERN.search(text)
+            if m:
+                if debug:
+                    print(f"[잡코리아][디버그] 마감일 패턴 '{m.group(0)}' 발견 "
+                          f"(조상 {level+1}단계, 컨테이너 길이 {len(text)}자, 다른 공고 혼입 없음)")
+                return m.group(0)
+        return ""
+
     def _parse_search_html(self, html: str, user_profile: dict, keyword: str) -> list[dict]:
         """
         실제 검색 페이지(/Search?stext=...) 파싱.
-        이 페이지는 기존 duty 필터용 내부 API(_GI_List)와 완전히 다른 템플릿을
-        써서, 정확한 CSS 클래스명이 아직 확인되지 않았다. 그래서 사이트 전역에서
-        공통으로 쓰이는 공고 상세페이지 URL 패턴(/Recruit/GI_Read/{숫자})을
-        기준으로 링크를 모아 파싱한다 (원티드 어댑터에서 쓴 것과 같은 방식).
-
-        디버그: 처음 실행 시 실제 HTML 스니펫을 출력해서, 이 파싱 결과가
-        기대와 다르면 실제 구조를 보고 선택자를 다듬을 수 있게 한다.
         """
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
 
         job_links = soup.select('a[href*="/Recruit/GI_Read/"]')
 
-        if job_links:
-            first_href = job_links[0].get("href", "")
-            idx = html.find(first_href)
-            snippet = html[max(0, idx - 400): idx + 600]
-            print(f"[잡코리아][디버그] 검색결과 링크 {len(job_links)}개 발견, HTML 스니펫:\n{snippet}")
-        else:
+        if not job_links:
             print(f"[잡코리아][디버그] 검색결과 링크 0개 — HTML 응답 길이: {len(html)}자")
             return []
 
         groups: dict = {}
         for a in job_links:
             href = a.get("href", "")
-            m = re.search(r"/Recruit/GI_Read/(\d+)", href)
+            m = JOB_LINK_PATTERN.search(href)
             if not m:
                 continue
             gno = m.group(1)
             groups.setdefault(gno, []).append(a)
 
         jobs = []
+        debug_count = 0
         for gno, anchors in groups.items():
             try:
                 text_anchors = [a for a in anchors if a.get_text(strip=True)]
@@ -230,17 +255,24 @@ class JobKoreaAdapter(BaseAdapter):
                 if not title:
                     continue
 
+                show_debug = debug_count < 3
+                deadline_raw = self._extract_deadline_near(text_anchors[0], gno, debug=show_debug)
+                deadline = self._parse_deadline(deadline_raw)
+                if show_debug:
+                    print(f"[잡코리아][디버그] '{title[:20]}' → 마감일 원문: '{deadline_raw}' → 파싱: {deadline}")
+                    debug_count += 1
+
                 jobs.append({
                     "title": title,
                     "company": company,
                     "category": user_profile.get("category", ""),
                     "employment_type": user_profile.get("employment_type", ""),
                     "location": user_profile.get("location", ""),
-                    "deadline": None,
+                    "deadline": deadline,
                     "source": "잡코리아",
                     "source_url": source_url,
                     "rating": None, "competition_ratio": None,
-                    "_raw": {"gno": gno},
+                    "_raw": {"gno": gno, "deadline_raw": deadline_raw},
                 })
             except Exception as e:
                 print(f"[잡코리아] 검색결과 파싱 오류: {e}")
@@ -251,6 +283,8 @@ class JobKoreaAdapter(BaseAdapter):
         return jobs
 
     def _parse_deadline(self, raw: str) -> Optional[str]:
+        if not raw:
+            return None
         today = datetime.now()
         if "상시" in raw or "채용시" in raw:
             return None
@@ -258,9 +292,14 @@ class JobKoreaAdapter(BaseAdapter):
             return (today + timedelta(days=2)).strftime("%Y-%m-%d")
         if "내일" in raw:
             return (today + timedelta(days=1)).strftime("%Y-%m-%d")
-        m = re.search(r"~(\d{2})\/(\d{2})", raw)
+        if "오늘" in raw:
+            return today.strftime("%Y-%m-%d")
+        m = re.search(r"~\s*(\d{1,2})\s*/\s*(\d{1,2})", raw)
         if m:
             month, day = int(m.group(1)), int(m.group(2))
             year = today.year if month >= today.month else today.year + 1
             return f"{year}-{month:02d}-{day:02d}"
+        m2 = re.search(r"D-(\d+)", raw)
+        if m2:
+            return (today + timedelta(days=int(m2.group(1)))).strftime("%Y-%m-%d")
         return None
