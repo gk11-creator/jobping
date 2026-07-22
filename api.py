@@ -71,18 +71,6 @@ async def delete_row(table: str, row_id):
         return res
 
 
-def normalize_url(u: str) -> str:
-    """인코딩 횟수와 무관하게 http(s)로 시작할 때까지 디코딩 (최대 3회)"""
-    if not u:
-        return ""
-    for _ in range(3):
-        if u.startswith("http://") or u.startswith("https://"):
-            return u
-        decoded = urllib.parse.unquote(u)
-        if decoded == u:  # 더 이상 변화 없으면 중단
-            break
-        u = decoded
-    return u
 
 @app.get("/track")
 async def track_click(

@@ -78,9 +78,24 @@ class Orchestrator:
         return list(seen.values())
 
     def _sort(self, jobs: list[dict]) -> list[dict]:
+        """
+        정렬 우선순위: match_type(정밀 카테고리 매칭 vs 키워드 검색 폴백) 먼저,
+        그다음 마감일 임박도, 그다음 평점.
+
+        예전엔 마감일 임박도만으로 전체를 섞어서 정렬했는데, 이러면 뒤에서
+        score_jobs()가 상위 60개만 잘라서 GPT에게 넘길 때 정밀 카테고리로
+        찾은 정확한 결과(예: 원티드의 카테고리 코드 기반 검색)가 단순히
+        "마감일이 조금 늦다"는 이유만으로 60등 밖으로 밀려나 GPT 눈에 아예
+        안 보이는 문제가 있었음 (장세욱/구재정 케이스로 확인됨).
+        정밀 매칭 결과를 항상 먼저 배치해 이 문제를 막는다.
+        """
         today = datetime.now().date()
 
         def sort_key(job):
+            # match_type 태그가 없는 경우(과거 데이터 호환 등) category로 간주
+            match_type = job.get("match_type", "category")
+            match_priority = 0 if match_type == "category" else 1
+
             deadline = job.get("deadline")
             rating = job.get("rating") or 0.0
             if deadline:
@@ -88,10 +103,10 @@ class Orchestrator:
                     d = datetime.strptime(deadline, "%Y-%m-%d").date()
                     days_left = (d - today).days
                     if days_left < 0:
-                        return (2, 9999, -rating)
-                    return (0, days_left, -rating)
+                        return (match_priority, 2, 9999, -rating)
+                    return (match_priority, 0, days_left, -rating)
                 except ValueError:
-                    return (1, 9999, -rating)
-            return (1, 9999, -rating)
+                    return (match_priority, 1, 9999, -rating)
+            return (match_priority, 1, 9999, -rating)
 
         return sorted(jobs, key=sort_key)

@@ -1,5 +1,5 @@
 """
-프로필 분석기 — LinkedIn 프로필 → user_profile 변환 + 공고 매칭
+프로필 분석기 — 구독자 프로필(LinkedIn 크롤링 / Google Form 응답) → user_profile 변환 + 공고 매칭
 """
 import asyncio
 import json
@@ -18,12 +18,17 @@ async def analyze_profile(subscriber: dict) -> dict:
         return _default_profile(subscriber)
 
     prompt = f"""
-다음은 LinkedIn 사용자 프로필입니다. 이 사람에게 맞는 채용 공고를 찾기 위한 검색 조건을 JSON으로 만들어주세요.
+다음은 구직자 프로필입니다. 이 사람에게 맞는 채용 공고를 찾기 위한 검색 조건을 JSON으로 만들어주세요.
 
 [프로필 정보]
 이름: {profile.get('name', '')}
 헤드라인: {profile.get('headline', '')}
+희망 고용형태(명시된 경우 이 값을 최우선으로 사용): {profile.get('work_type', '')}
+경력 연차: {profile.get('employment_type', '')}
 위치: {profile.get('location', '')}
+희망 근무지: {profile.get('desired_location', '')}
+관심 산업: {json.dumps(profile.get('industries', []), ensure_ascii=False)}
+추가 요청사항: {profile.get('extra', '')}
 소개: {profile.get('summary', '')}
 학력: {json.dumps(profile.get('education', []), ensure_ascii=False)}
 경력: {json.dumps(profile.get('experiences', []), ensure_ascii=False)}
@@ -52,11 +57,15 @@ IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업/영업관리,
 무역/유통, 서비스/고객지원, 물류/구매, 경영지원/총무
 
 [규칙]
-- 학생이면 employment_type은 "인턴"
-- 스킬/경력/소개 기반으로 categories 추론 (최대 3개)
+- employment_type(출력)은 "희망 고용형태" 필드가 명시돼 있으면 그 값을 그대로 반영할 것
+  (예: "정규직"이 명시돼 있으면 절대 "인턴"으로 바꾸지 말 것)
+- "희망 고용형태"가 비어있고, "경력 연차"도 없거나 "신입/0년" 계열이면 "인턴" 또는 "신입"으로 추론
+- "경력 연차"(예: "1-3년", "3-5년")는 career_level 판단에만 사용하고, employment_type과 혼동하지 말 것
+  (career_level: 연차가 있으면 "경력", 없으면 "신입")
+- 스킬/경력/소개/관심산업 기반으로 categories 추론 (최대 3개)
 - 여러 직군을 원하는 경우 모두 포함 (예: 법무+경영+HR → 3개)
 - 하나의 직군만 원하면 1개만 포함
-- 위치 정보 없으면 "서울" 기본값
+- 위치는 "희망 근무지"가 있으면 그것을 우선 사용, 없으면 "위치" 사용, 그것도 없으면 "서울" 기본값
 - min_grade는 3.0~5.0 사이
 - graduation_year는 숫자 문자열 또는 null
 """
@@ -77,8 +86,9 @@ IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업/영업관리,
         categories = user_profile.get("categories", [])
         if categories:
             user_profile["category"] = categories[0]
-        
-        print(f"[프로필분석] {user_profile.get('name')} → {categories} / {user_profile.get('location')}")
+
+        print(f"[프로필분석] {user_profile.get('name')} → {categories} / "
+              f"{user_profile.get('employment_type')} / {user_profile.get('location')}")
         return user_profile
     except Exception as e:
         print(f"[프로필분석] GPT 오류: {e}")
@@ -86,17 +96,28 @@ IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업/영업관리,
 
 
 def _default_profile(subscriber: dict) -> dict:
+    """
+    GPT 분석 실패시 폴백. 원본 데이터에서:
+    - work_type: 실제 "희망 고용형태" (정규직/인턴 등)
+    - employment_type: 사실은 "경력 연차" 값 (예: "1-3년") — 고용형태가 아님에 주의.
+      이전 버전에서는 이 필드를 그대로 employment_type(고용형태)로 잘못 사용해서,
+      경력직 구직자(예: work_type="정규직", employment_type="1-3년")도 전부
+      "인턴"으로 취급되는 버그가 있었다 (조현용 케이스로 확인됨).
+    """
     profile = subscriber.get("profile", {}) or {}
     headline = profile.get("headline", "기타")
+    work_type = profile.get("work_type", "")
+    tenure = profile.get("employment_type", "")  # 연차 정보, 고용형태 아님
+
     return {
         "email": subscriber.get("email", ""),
         "name": subscriber.get("name", ""),
         "categories": [headline],
         "category": headline,
-        "employment_type": profile.get("employment_type", "인턴"),
+        "employment_type": work_type or "인턴",
         "location": profile.get("desired_location") or profile.get("location", "서울"),
         "skills": profile.get("skills", []),
-        "career_level": profile.get("employment_type", "신입"),
+        "career_level": "경력" if tenure and "년" in tenure else "신입",
         "preferred_company_size": "전체",
         "min_grade": 3.0,
         "graduation_year": None,
