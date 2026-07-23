@@ -90,7 +90,7 @@ async def track_click(
     return RedirectResponse(
         url=url,
         status_code=302,
-        headers={"Referrer-Policy": "no-referrer"},
+        # headers={"Referrer-Policy": "no-referrer"},  # 일단 제거하고 테스트
     )
 
 # ─────────────────────────────────────────
