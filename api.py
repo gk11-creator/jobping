@@ -87,12 +87,32 @@ async def track_click(
         "url": url,
         "deadline": deadline,
     })
-    return RedirectResponse(
-        url=url,
-        status_code=302,
-        # headers={"Referrer-Policy": "no-referrer"},  # 일단 제거하고 테스트
-    )
 
+    # 예전: RedirectResponse(url=url, status_code=302, ...)
+    # → HTTP 302는 브라우저가 "실제 페이지 로드 없이" 곧바로 다음 주소로
+    # 튕기는 특수 네비게이션이라, 링커리어 쪽에서 이걸 정상적인 유입으로
+    # 인식하지 못하고 조회수/댓글/사이드바 위젯이 빠진 스켈레톤 버전을
+    # 내려주는 문제가 있었음 (동일 URL을 직접 검색해서 들어가면 항상 정상).
+    #
+    # 대신 200 응답으로 실제 HTML 문서를 한 번 로드시키고, 그 안에서
+    # meta refresh로 이동시키면 브라우저가 "우리 페이지 → 링커리어"로
+    # 이어지는 일반적인 문서 탐색으로 처리해서 정상적인 리퍼러/헤더를
+    # 보낼 가능성이 있음. 클릭 로그는 위에서 이미 서버 사이드로 기록
+    # 완료했으므로 JS 없이도 100% 남음.
+    safe_url = html.escape(url, quote=True)
+    redirect_html = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="0;url={safe_url}">
+  <title>이동 중...</title>
+</head>
+<body style="font-family:-apple-system,sans-serif;text-align:center;padding:60px 20px;color:#6b7280;">
+  <p>공고 페이지로 이동 중입니다...</p>
+  <p><a href="{safe_url}">자동으로 이동하지 않으면 여기를 클릭하세요</a></p>
+</body>
+</html>"""
+    return HTMLResponse(content=redirect_html)
 # ─────────────────────────────────────────
 # 공고 저장
 # ─────────────────────────────────────────
