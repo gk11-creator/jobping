@@ -1,4 +1,4 @@
-"""
+﻿"""
 프로필 분석기 — 구독자 프로필(LinkedIn 크롤링 / Google Form 응답) → user_profile 변환 + 공고 매칭
 """
 import asyncio
@@ -44,6 +44,7 @@ async def analyze_profile(subscriber: dict) -> dict:
   "preferred_company_size": "스타트업",
   "min_grade": 3.5,
   "graduation_year": "2027",
+  "industries": ["IT", "스타트업"],
   "summary": "이 사람을 한 줄로 요약"
 }}
 
@@ -68,6 +69,8 @@ IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업/영업관리,
 - 위치는 "희망 근무지"가 있으면 그것을 우선 사용, 없으면 "위치" 사용, 그것도 없으면 "서울" 기본값
 - min_grade는 3.0~5.0 사이
 - graduation_year는 숫자 문자열 또는 null
+- industries(관심 산업)는 원본 프로필의 "관심 산업" 값을 그대로 배열로 반환
+  (검색 키워드 조합에 쓰이므로 임의로 바꾸지 말 것. 원본에 없으면 빈 배열)
 """
     try:
         response = await client.chat.completions.create(
@@ -82,10 +85,12 @@ IT기획/PM, 기획/전략, 마케팅/광고, 디자인, 영업/영업관리,
         user_profile["email"] = subscriber.get("email", "")
         user_profile["name"] = subscriber.get("name", "")
 
-        # categories → category 호환성 유지
         categories = user_profile.get("categories", [])
         if categories:
             user_profile["category"] = categories[0]
+
+        if not user_profile.get("industries"):
+            user_profile["industries"] = profile.get("industries", [])
 
         print(f"[프로필분석] {user_profile.get('name')} → {categories} / "
               f"{user_profile.get('employment_type')} / {user_profile.get('location')}")
@@ -99,7 +104,7 @@ def _default_profile(subscriber: dict) -> dict:
     """
     GPT 분석 실패시 폴백. 원본 데이터에서:
     - work_type: 실제 "희망 고용형태" (정규직/인턴 등)
-    - employment_type: 사실은 "경력 연차" 값 (예: "1-3년") — 고용형태가 아님에 주의.
+    - employment_type: 사실은 "경력 연차" 값 (예: "1-3년") -- 고용형태가 아님에 주의.
       이전 버전에서는 이 필드를 그대로 employment_type(고용형태)로 잘못 사용해서,
       경력직 구직자(예: work_type="정규직", employment_type="1-3년")도 전부
       "인턴"으로 취급되는 버그가 있었다 (조현용 케이스로 확인됨).
@@ -107,7 +112,7 @@ def _default_profile(subscriber: dict) -> dict:
     profile = subscriber.get("profile", {}) or {}
     headline = profile.get("headline", "기타")
     work_type = profile.get("work_type", "")
-    tenure = profile.get("employment_type", "")  # 연차 정보, 고용형태 아님
+    tenure = profile.get("employment_type", "")
 
     return {
         "email": subscriber.get("email", ""),
@@ -121,13 +126,11 @@ def _default_profile(subscriber: dict) -> dict:
         "preferred_company_size": "전체",
         "min_grade": 3.0,
         "graduation_year": None,
+        "industries": profile.get("industries", []),
         "summary": profile.get("summary", ""),
     }
 
 
-# ─────────────────────────────────────────
-# GPT 매칭 전 코드 레벨 사전 필터
-# ─────────────────────────────────────────
 EXCLUDE_TITLE_KEYWORDS = [
     "파트", "홀서빙", "세척", "주방", "시급", "알바", "아르바이트",
     "조리", "기능직",
@@ -137,10 +140,6 @@ EXCLUDE_TITLE_KEYWORDS = [
 
 
 def _title_matches_keyword(title: str, keyword: str) -> bool:
-    """
-    키워드 검색 폴백으로 가져온 공고의 제목에, 실제로 그 검색 키워드(의 일부)가
-    포함돼 있는지 확인한다.
-    """
     if not keyword:
         return True
 
@@ -160,9 +159,6 @@ def _title_matches_keyword(title: str, keyword: str) -> bool:
 
 
 def prefilter_by_category(jobs: list[dict], categories: list[str]) -> list[dict]:
-    """
-    GPT 매칭 호출 전, 코드 레벨에서 명백히 무관하거나 제외 대상인 공고를 걸러낸다.
-    """
     if not jobs:
         return jobs
 
@@ -177,8 +173,14 @@ def prefilter_by_category(jobs: list[dict], categories: list[str]) -> list[dict]
             excluded_count += 1
             continue
 
-        if job.get("match_type") == "keyword":
-            matched_keyword = job.get("_matched_keyword", "")
+        # 예전엔 match_type == "keyword"인 것만 검증했는데, 이러면 "카테고리
+        # 코드 보충" 경로(예: 링커리어/원티드가 검색 결과 부족시 categoryIDs로
+        # 채우는 결과)가 match_type="category"로 태깅되어 검증을 통째로
+        # 건너뛰는 문제가 있었다. 검색 결과가 없어서 보충으로 채워진 경우가
+        # 오히려 더 무관한 결과일 가능성이 높으므로, match_type과 무관하게
+        # _matched_keyword가 붙어있는 모든 job에 대해 검증한다.
+        matched_keyword = job.get("_matched_keyword", "")
+        if matched_keyword:
             if not _title_matches_keyword(title, matched_keyword):
                 keyword_irrelevant_count += 1
                 continue
@@ -196,20 +198,6 @@ def prefilter_by_category(jobs: list[dict], categories: list[str]) -> list[dict]
 
 
 def _interleave_by_category(jobs_by_category: dict, categories: list[str]) -> list[dict]:
-    """
-    카테고리별로 이미 정렬된 리스트들을 라운드로빈 방식으로 섞는다.
-
-    예전엔 카테고리 순서대로 리스트를 단순히 이어붙였는데, 그러면 사용자가
-    여러 카테고리를 신청했을 때 첫 번째 카테고리 하나가 결과를 60개 넘게
-    채워버리는 경우 나머지 카테고리들은 jobs[:60] 컷에 아예 안 들어가서
-    GPT 눈에 전혀 안 보이는 문제가 있었다 (박지훈 케이스로 확인됨 — 3개
-    카테고리 중 "마케팅/광고"가 첫 번째라서, "제조/QC/QA"·"서비스/고객지원"
-    관련 공고는 최종 10개에 거의 반영이 안 됨).
-
-    라운드로빈으로 카테고리 A, B, C의 항목을 A,B,C,A,B,C... 순서로 배치하면,
-    각 카테고리별 내부 우선순위(match_type/마감일 기준 정렬)는 유지하면서도
-    특정 카테고리가 앞자리를 독점하는 것을 막을 수 있다.
-    """
     queues = [list(jobs_by_category.get(c, [])) for c in categories]
     interleaved = []
     while any(queues):
@@ -228,8 +216,6 @@ async def score_jobs(user_profile: dict, jobs: list[dict], top_n: int = 10) -> l
 
     jobs_summary = []
     for i, job in enumerate(jobs[:60]):
-        # 같은 공고가 여러 카테고리 패스에서 중복 발견된 경우 병합된 카테고리
-        # 목록(_matched_categories)이 있으면 그걸 우선 사용한다.
         matched_categories = job.get("_matched_categories") or [job.get("category", "")]
         category_display = ", ".join(c for c in matched_categories if c)
 
@@ -339,9 +325,8 @@ async def run_pipeline(subscribers: list[dict]) -> list[dict]:
         user_profile = await analyze_profile(subscriber)
         categories = user_profile.get("categories", [user_profile.get("category", "")])
 
-        # 카테고리별로 결과를 따로 보관한다 (나중에 라운드로빈으로 섞기 위함).
         jobs_by_category: dict = {}
-        seen_urls: dict = {}  # url -> 이미 저장된 job (동일 URL 재발견시 카테고리만 병합)
+        seen_urls: dict = {}
 
         for category in categories:
             profile_for_category = {**user_profile, "category": category}
@@ -355,8 +340,6 @@ async def run_pipeline(subscribers: list[dict]) -> list[dict]:
                     continue
 
                 if url in seen_urls:
-                    # 이미 다른 카테고리 패스에서 찾은 공고 — 완전히 버리지 않고
-                    # "이 카테고리에도 해당한다"는 정보만 병합한다.
                     existing = seen_urls[url]
                     matched = existing.setdefault(
                         "_matched_categories", [existing.get("category", "")]
@@ -371,10 +354,8 @@ async def run_pipeline(subscribers: list[dict]) -> list[dict]:
 
             jobs_by_category[category] = category_jobs
 
-        # 라운드로빈으로 섞어서 특정 카테고리가 순서상 유리해지는 것을 방지
         all_jobs = _interleave_by_category(jobs_by_category, categories)
 
-        # 마감 지난 공고 제거
         today = date.today()
         all_jobs = [
             j for j in all_jobs
@@ -382,7 +363,6 @@ async def run_pipeline(subscribers: list[dict]) -> list[dict]:
             datetime.strptime(j["deadline"], "%Y-%m-%d").date() >= today
         ]
 
-        # GPT 매칭 전 코드 레벨 사전 필터
         all_jobs = prefilter_by_category(all_jobs, categories)
 
         matched_jobs = await score_jobs(user_profile, all_jobs, top_n=10)

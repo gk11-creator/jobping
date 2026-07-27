@@ -156,6 +156,11 @@ class LinkareerAdapter(BaseAdapter):
                         continue
                     bid = bj.get("_raw", {}).get("id")
                     if bid not in existing_ids:
+                        # 보충 결과도 검색 결과와 동일하게 제목 관련성 검증을
+                        # 받도록 키워드를 붙인다 (categoryIDs 필터가 정밀하다는
+                        # 보장이 없다는 것이 이미 여러 번 확인됐으므로, 검증
+                        # 없이 그냥 통과시키지 않는다).
+                        bj["_matched_keyword"] = keyword
                         jobs.append(bj)
                         existing_ids.add(bid)
                 print(f"[링커리어][디버그] 보충 후 총 {len(jobs)}개")

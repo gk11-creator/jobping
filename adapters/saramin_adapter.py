@@ -1,4 +1,4 @@
-"""
+﻿"""
 사람인 어댑터
 
 [아키텍처 변경 이력]
@@ -67,7 +67,8 @@ class SaraminAdapter(BaseAdapter):
             await self._refresh_session()
 
         category = user_profile.get("category", "")
-        keyword = get_search_keyword(category)
+        industries = user_profile.get("industries", [])
+        keyword = get_search_keyword(category, industries)
         encoded_keyword = urllib.parse.quote(keyword)
 
         url = (
@@ -78,7 +79,7 @@ class SaraminAdapter(BaseAdapter):
 
         try:
             await self._goto_safe(url)
-            await asyncio.sleep(4)  # JS가 결과를 채울 시간
+            await asyncio.sleep(4)
             html = await self.page.content()
         except Exception as e:
             print(f"[사람인] 검색페이지 접속 실패: {e}")

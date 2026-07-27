@@ -213,7 +213,11 @@ class WantedAdapter(BaseAdapter):
                 print(f"[원티드][디버그] 결과 부족 -- 카테고리 코드 {category_id}로 보충 시도")
 
                 existing_urls = {c["source_url"] for c in candidates}
-                backup = await self._scrape_url(cat_url, "category", "", user_profile)
+                # match_type은 "category"로 유지하되, _matched_keyword는 붙여서
+                # 사전필터의 제목 관련성 검증을 반드시 받게 한다. wdlist
+                # 카테고리 코드가 정밀하다는 보장이 없다는 것이 이미 여러 번
+                # 확인됐으므로, 검증 없이 통과시키면 무관한 결과가 새어 들어간다.
+                backup = await self._scrape_url(cat_url, "category", keyword, user_profile)
                 for b in backup:
                     if b["source_url"] not in existing_urls:
                         candidates.append(b)

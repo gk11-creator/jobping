@@ -1,15 +1,22 @@
-"""
-카테고리 → 검색 키워드 공용 매핑
+﻿"""
+카테고리 -> 검색 키워드 공용 매핑
 ─────────────────────────────────────────
 profile_analyzer.py의 GPT 프롬프트가 정의하는 26개 마스터 카테고리 기준.
-각 사이트 어댑터(잡코리아/캐치/자소설닷컴/슈퍼루키 등)가 자체 duty/카테고리 코드
-매핑 테이블에서 해당 카테고리를 찾지 못했을 때, 이 공용 키워드로 자유 검색을
-수행해 최소한 "완전히 무관한 카테고리"로 새는 것을 막는다.
 
-주의: 이건 정밀한 코드 기반 필터보다는 느슨하지만, 예전처럼
-- 미등록 카테고리를 IT 등 엉뚱한 카테고리로 고정하거나
-- 사용자의 스킬 목록(예: "MS 엑셀")을 대신 검색어로 쓰는 것보다는
-훨씬 안전하다. 최종 정밀도는 뒤 단계의 GPT 매칭(score_jobs)에서 보정된다.
+[검색 전략 변경]
+기존엔 각 사이트 어댑터가 자체 duty/카테고리 코드로 먼저 시도하고,
+실패했을 때만 이 키워드로 자유 검색하는 "폴백" 역할이었다. 그런데
+실사용 데이터에서 사이트별 카테고리 코드 필터가 반복적으로 무시/오작동
+하는 것이 확인되어 (잡코리아 condition[duty], 사람인 cat_kewd 등),
+이제 이 키워드 기반 검색을 모든 어댑터의 "최우선" 검색 방식으로 삼는다.
+
+추가로, 카테고리 키워드 단독 검색(예: "영업")은 너무 광범위해서 무관한
+결과가 섞이기 쉬우므로, 사용자의 관심 산업(industries, 예: "IT", "스타트업")
+이 있으면 이를 카테고리 키워드와 조합해 더 구체적인 검색어를 만든다
+(예: industries=["IT"] + category="영업/영업관리" -> "IT 영업").
+관심 산업이 여러 개면 첫 번째 값만 사용해 검색어가 과도하게 길어지는
+것을 막는다 (여러 산업을 다 반영하고 싶으면 호출부에서 산업별로 여러 번
+검색을 돌리는 방식을 고려할 것).
 """
 
 MASTER_CATEGORIES = [
@@ -22,8 +29,6 @@ MASTER_CATEGORIES = [
     "무역/유통", "서비스/고객지원", "물류/구매", "경영지원/총무",
 ]
 
-# 각 마스터 카테고리에 대응하는 자유 검색용 키워드
-# (사이트 검색창에 실제로 넣었을 때 관련 공고가 잘 잡히는 짧은 한글 키워드 위주)
 CATEGORY_SEARCH_KEYWORD = {
     "IT개발 > 서버/백엔드": "백엔드",
     "IT개발 > 프론트엔드": "프론트엔드",
@@ -35,7 +40,7 @@ CATEGORY_SEARCH_KEYWORD = {
     "IT개발 > Android": "안드로이드 개발자",
     "IT개발 > QA": "QA",
     "IT개발 > 보안": "보안",
-    "IT기획/PM": "IT기획",
+    "IT기획/PM": "IT 기획",
     "기획/전략": "기획",
     "마케팅/광고": "마케팅",
     "디자인": "디자인",
@@ -54,13 +59,8 @@ CATEGORY_SEARCH_KEYWORD = {
 }
 
 
-def get_search_keyword(category: str) -> str:
-    """
-    카테고리 문자열을 받아 검색용 키워드를 반환.
-    1) 정확히 일치하면 그대로 매핑값 사용
-    2) 부분 일치(포함 관계)로 한 번 더 시도
-    3) 그래도 못 찾으면 카테고리 원문을 그대로 검색어로 사용 (최후 수단)
-    """
+def _base_keyword(category: str) -> str:
+    """카테고리 문자열 -> 산업 조합 없는 순수 직무 키워드."""
     if not category:
         return ""
 
@@ -72,3 +72,28 @@ def get_search_keyword(category: str) -> str:
             return keyword
 
     return category
+
+
+def get_search_keyword(category: str, industries: list | None = None) -> str:
+    """
+    카테고리(+선택적으로 관심 산업)를 받아 검색용 키워드를 반환.
+
+    industries가 주어지면 "산업 직무" 형태로 조합한다 (예: "IT 영업").
+    이러면 카테고리 키워드 단독 검색보다 결과가 좁혀져서 무관한 공고가
+    섞일 확률이 낮아진다. industries가 여러 개면 첫 번째 값만 사용한다.
+
+    industries가 없거나 빈 리스트면 기존처럼 카테고리 키워드만 반환한다
+    (하위 호환 -- 기존 호출부(get_search_keyword(category))도 그대로 동작).
+    """
+    keyword = _base_keyword(category)
+    if not keyword:
+        return ""
+
+    if industries:
+        primary_industry = industries[0].strip()
+        if primary_industry:
+            existing_tokens = {t.lower() for t in keyword.split()}
+            if primary_industry.lower() not in existing_tokens:
+                return f"{primary_industry} {keyword}"
+
+    return keyword
