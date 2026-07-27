@@ -1,7 +1,8 @@
 """
-오케스트레이터 — 3개 어댑터 동시 실행
+오케스트레이터 — 여러 어댑터 동시 실행
 """
 import asyncio
+import re
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,6 +15,31 @@ from adapters.superookie_adapter import SuperookieAdapter
 from adapters.catch_adapter import CatchAdapter
 from adapters.jasoseol_adapter import JasoseolAdapter
 from adapters.wanted_adapter import WantedAdapter
+from adapters.saramin_adapter import SaraminAdapter
+
+
+def _normalize_for_dedup(text: str) -> str:
+    """
+    중복 판별용 문자열 정규화.
+
+    다른 소스(예: 링커리어 vs 원티드)에서 같은 공고를 서로 다른 표기로
+    내려주는 경우가 있어서 (법인 표기 유무, 대괄호 태그, 공백 차이 등)
+    단순 strip().lower()만으로는 같은 공고를 다른 공고로 오인해 둘 다
+    남기는 문제가 있었다 (조현용 케이스 — "에너닷" vs "(주)에너닷" /
+    "[에너닷] DR사업 PM" vs "DR사업 PM" 형태로 중복 노출됨).
+
+    - 법인 표기(주식회사/㈜/(주)) 제거
+    - 대괄호/괄호로 감싼 부가 태그 제거 (예: "[쿠팡]", "(경력)")
+    - 모든 공백(전각 포함) 제거
+    """
+    if not text:
+        return ""
+    text = text.strip().lower()
+    text = re.sub(r"주식회사|㈜|\(주\)", "", text)
+    text = re.sub(r"[\[\(].*?[\]\)]", "", text)
+    text = re.sub(r"\s+", "", text)
+    return text
+
 
 class Orchestrator:
     def __init__(self, headless: bool = True):
@@ -40,6 +66,7 @@ class Orchestrator:
             CatchAdapter(),
             JasoseolAdapter(),
             WantedAdapter(),
+            SaraminAdapter(),
         ]
 
         print(f"[오케스트레이터] 수집 시작 — {len(adapters)}개 사이트")
@@ -67,12 +94,13 @@ class Orchestrator:
         seen = {}
         for job in jobs:
             key = (
-                job.get("company", "").strip().lower(),
-                job.get("title", "").strip().lower()[:30]
+                _normalize_for_dedup(job.get("company", "")),
+                _normalize_for_dedup(job.get("title", ""))[:20],
             )
             if key not in seen:
                 seen[key] = job
             else:
+                # 이미 있는 공고와 중복 — rating(평점) 있는 쪽을 우선 보존
                 if job.get("rating") and not seen[key].get("rating"):
                     seen[key] = job
         return list(seen.values())

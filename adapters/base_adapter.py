@@ -1,5 +1,5 @@
 """
-BaseAdapter — 모든 어댑터의 공통 베이스 클래스
+BaseAdapter -- 모든 어댑터의 공통 베이스 클래스
 """
 import asyncio
 import random
@@ -52,14 +52,26 @@ class BaseAdapter(ABC):
 
     async def start(self, headless: bool = True):
         self._playwright = await async_playwright().start()
+
+        launch_args = [
+            "--no-sandbox",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-infobars",
+            "--disable-dev-shm-usage",
+        ]
+
+        # 사람인 등 일부 사이트가 구형 헤드리스 크로미움을 탐지해서 접속
+        # 자체를 지연/차단하는 것으로 확인됨 (headless=False 로컬 테스트에서는
+        # 정상 로드, headless=True에서만 15초 타임아웃 발생 -- 구재정 프로필로
+        # 재현 확인). "--headless=new"는 실제 렌더링 파이프라인을 그대로 쓰는
+        # 신형 헤드리스 모드라 기존 방식보다 탐지가 훨씬 어렵다. 창을 띄우지
+        # 않는 headless=True일 때만 이 플래그를 추가한다.
+        if headless:
+            launch_args.append("--headless=new")
+
         self.browser = await self._playwright.chromium.launch(
-            headless=headless,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-infobars",
-                "--disable-dev-shm-usage",
-            ]
+            headless=False,
+            args=launch_args,
         )
         await self._new_context()
 
@@ -105,7 +117,7 @@ class BaseAdapter(ABC):
 
     async def _block_delay(self):
         wait = random.uniform(BLOCK_WAIT_MIN, BLOCK_WAIT_MAX)
-        print(f"[{self.__class__.__name__}] 차단 감지 — {wait:.0f}초 대기...")
+        print(f"[{self.__class__.__name__}] 차단 감지 -- {wait:.0f}초 대기...")
         await asyncio.sleep(wait)
 
     async def _maybe_rotate_ua(self):

@@ -1,5 +1,20 @@
 """
 자소설닷컴(jasoseol.com) 채용공고 어댑터
+
+[검색 방식]
+자소설닷컴은 duty 코드 같은 구조적 필터가 전혀 없고 100% 텍스트 검색(q=)만
+지원한다. 그래서 CATEGORY_KEYWORD_MAP에 등록된 키워드든, category_map.py의
+공용 폴백 키워드든 -- 어느 쪽이든 결국 "이 사이트에 텍스트로 검색해본 것"일
+뿐이라 신뢰도 차이가 없다. match_type은 항상 "keyword"로 고정해서, 최종
+사전필터 단계에서 반드시 제목 관련성 검증을 받도록 한다.
+(예전엔 CATEGORY_KEYWORD_MAP 매칭시 "category"로 잘못 분류해서 검증을
+건너뛰었고, 그 결과 "오피스 세일즈 담당자" 같은 무관한 공고가 "가구디자인"·
+"데이터분석" 등 서로 다른 카테고리 사용자 모두에게 새어 들어간 것이 확인됨)
+
+[산업 조합 추가]
+다른 어댑터(잡코리아/사람인)와 동일하게, 사용자의 관심 산업(industries)이
+있으면 카테고리 키워드와 조합해 검색어를 더 구체화한다
+(예: industries=["IT"] + 카테고리 "영업/영업관리" -> "IT 영업").
 """
 import asyncio
 import re
@@ -33,22 +48,26 @@ class JasoseolAdapter(BaseAdapter):
         await asyncio.sleep(2)
         print("[자소설닷컴] 세션 재획득 완료")
 
-    def _get_keyword_and_type(self, user_profile: dict) -> tuple[str, str]:
-        """
-        자소설닷컴은 duty 코드 같은 구조적 필터가 전혀 없고 100% 텍스트 검색(q=)만
-        지원한다. 그래서 CATEGORY_KEYWORD_MAP에 등록된 키워드든, category_map.py의
-        공용 폴백 키워드든 — 어느 쪽이든 결국 "이 사이트에 텍스트로 검색해본 것"일
-        뿐이라 신뢰도 차이가 없다. match_type은 항상 "keyword"로 고정해서, 최종
-        사전필터 단계에서 반드시 제목 관련성 검증을 받도록 한다.
-        (예전엔 CATEGORY_KEYWORD_MAP 매칭시 "category"로 잘못 분류해서 검증을
-        건너뛰었고, 그 결과 "오피스 세일즈 담당자" 같은 무관한 공고가 "가구디자인"·
-        "데이터분석" 등 서로 다른 카테고리 사용자 모두에게 새어 들어간 것이 확인됨)
-        """
-        category = user_profile.get("category", "")
+    def _base_keyword(self, category: str) -> str:
         for key, keyword in CATEGORY_KEYWORD_MAP.items():
             if key in category:
-                return keyword, "keyword"
-        return get_search_keyword(category), "keyword"
+                return keyword
+        return get_search_keyword(category)
+
+    def _get_keyword_and_type(self, user_profile: dict) -> tuple[str, str]:
+        category = user_profile.get("category", "")
+        industries = user_profile.get("industries", [])
+
+        base = self._base_keyword(category)
+        if not base:
+            return "", "keyword"
+
+        if industries:
+            primary_industry = (industries[0] or "").strip()
+            if primary_industry:
+                return f"{primary_industry} {base}", "keyword"
+
+        return base, "keyword"
 
     def _parse_deadline(self, raw: str) -> str:
         """26/07/09 형태를 2026-07-09로 변환"""
@@ -109,7 +128,7 @@ class JasoseolAdapter(BaseAdapter):
                     title = await h4.inner_text() if h4 else ""
                     title = title.strip()
 
-                    # 마감일 — span 두 개 중 두 번째가 마감일 (26/07/09)
+                    # 마감일 -- span 두 개 중 두 번째가 마감일 (26/07/09)
                     spans = await card.query_selector_all("div.body6 span")
                     deadline = ""
                     if len(spans) >= 3:

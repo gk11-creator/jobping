@@ -1,29 +1,52 @@
 """
-사람인 어댑터 - 일반 검색 API 사용
+사람인 어댑터
+
+[아키텍처 변경 이력]
+1차: cat_kewd 기반 카테고리 코드 검색 -> 미등록 카테고리 전부 "서버/백엔드"로
+    고정되는 버그 확인, 폐기.
+2차: get-similar-recruit-list AJAX 엔드포인트를 직접 호출하는 방식으로 시도.
+    실제 브라우저 네비게이션에선 정상 접속되나, 이 엔드포인트가 "가구디자인"
+    같은 일부 키워드에 대해 resultCode: "empty"를 반환하는 것을 확인 --
+    이 API가 전체 검색 결과가 아니라 제한적인 "관련 채용" 위젯일 가능성이
+    높음. 폐기.
+3차(현재): 실제 검색 페이지(/zf_user/search?searchword=...)로 직접 이동한
+    뒤, 사이트 자체 JS가 결과를 채울 시간을 주고, 완성된 DOM을 그대로
+    긁는 방식. 엔드포인트를 추측할 필요가 없어 더 안정적이다.
+
+    또한 headless=True(서버 자동화 모드)에서만 page.goto(BASE_URL)이
+    15초 타임아웃 나는 현상을 확인 -- headless=False(실제 창)에서는
+    정상 로드됨. 구형 헤드리스 크로미움 탐지로 추정되며, BaseAdapter의
+    launch 인자에 "--headless=new"(신형 헤드리스)를 추가해 대응함
+    (base_adapter.py 참고).
+
+    검색 결과 각 항목 구조(실측):
+        <span class="corp_name"><a title="회사명">...</a></span>
+        <h2 class="job_tit"><a title="제목" href="...rec_idx=...">...</a></h2>
+        <div class="job_condition"><span><a href=".../area/...">지역</a>...</span><span>경력조건</span></div>
+        <div class="job_date"><span class="date">~ 08/08(수)</span></div>
+
+[미검증 부분 - 배포 전 반드시 디버그 로그로 확인]
+- 검색 결과가 페이지 로드 후 몇 초 만에 다 채워지는지 (지금은 4초 고정 대기 -
+  느리면 늘려야 함)
+- 페이지네이션 URL 파라미터 (recruitPage= 로 추정, 미검증)
 """
 import asyncio
 import re
+import urllib.parse
 from datetime import datetime, timedelta
 from typing import Optional
 from adapters.base_adapter import BaseAdapter
+from adapters.category_map import get_search_keyword
 
-CATEGORY_MAP = {
-    "IT개발 > 서버/백엔드": 84, "IT개발 > 프론트엔드": 87, "IT개발 > 풀스택": 226,
-    "IT개발 > 안드로이드": 88, "IT개발 > iOS": 89, "IT개발 > AI/ML": 400,
-    "IT개발 > 데이터분석": 401, "IT개발 > 데브옵스/인프라": 235, "IT개발 > 보안": 93,
-    "IT개발 > QA": 94, "IT개발 > 게임": 92, "기획/전략": 16, "마케팅/광고": 2,
-    "디자인": 10, "영업": 7, "경영/인사/총무": 11,
-}
-LOCATION_MAP = {
-    "서울": "101000", "경기": "102000", "인천": "108000", "부산": "106000",
-    "대구": "104000", "광주": "103000", "대전": "105000", "울산": "107000",
-    "세종": "118000", "강원": "109000", "경남": "110000", "경북": "111000",
-    "전남": "112000", "전북": "113000", "충남": "115000", "충북": "116000",
-    "제주": "117000", "해외": "119000",
-}
-EMPLOYMENT_MAP = {"정규직": "1", "계약직": "2", "인턴": "4", "파견직": "8", "프리랜서": "32"}
 BASE_URL = "https://www.saramin.co.kr"
-SEARCH_URL = f"{BASE_URL}/zf_user/jobs/list/job-category"
+SEARCH_URL = f"{BASE_URL}/zf_user/search"
+
+JOB_LINK_PATTERN = re.compile(r"rec_idx=(\d+)")
+
+DEADLINE_TEXT_PATTERN = re.compile(
+    r"(오늘\s*마감|내일\s*마감|모레\s*마감|상시\s*채용|채용\s*시\s*마감|"
+    r"~?\s*\d{1,2}\s*[./]\s*\d{1,2}\s*(?:\([가-힣]\))?|D-\d+)"
+)
 
 
 class SaraminAdapter(BaseAdapter):
@@ -31,107 +54,126 @@ class SaraminAdapter(BaseAdapter):
     async def _refresh_session(self):
         print("[사람인] 세션 재획득 중...")
         try:
-            await self.page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+            await self.page.goto(BASE_URL, wait_until="domcontentloaded", timeout=20000)
             await asyncio.sleep(2)
             self._session_valid = True
             print("[사람인] 세션 재획득 완료")
         except Exception as e:
             print(f"[사람인] 세션 재획득 실패: {e}")
-            self._session_valid = True  # 실패해도 진행
+            self._session_valid = True
 
     async def fetch_job_list(self, user_profile: dict, page: int = 1) -> list[dict]:
         if not self._session_valid:
             await self._refresh_session()
 
-        cat_code = CATEGORY_MAP.get(user_profile.get("category", ""), 84)
-        loc_code = LOCATION_MAP.get(user_profile.get("location", "서울"), "101000")
-        emp_code = EMPLOYMENT_MAP.get(user_profile.get("employment_type", "인턴"), "4")
+        category = user_profile.get("category", "")
+        keyword = get_search_keyword(category)
+        encoded_keyword = urllib.parse.quote(keyword)
 
         url = (
-            f"{SEARCH_URL}"
-            f"?cat_kewd={cat_code}"
-            f"&loc_mcd={loc_code}"
-            f"&job_type={emp_code}"
-            f"&page={page}"
-            f"&panel_type=&search_optional_item=n&search_done=y&panel_count=y"
+            f"{SEARCH_URL}?search_area=main&search_done=y&search_optional_item=n"
+            f"&searchType=search&searchword={encoded_keyword}&recruitPage={page}"
         )
+        print(f"[사람인][디버그] 검색페이지 접속: {url}")
 
         try:
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            await asyncio.sleep(2)
-        except Exception as e:
-            print(f"[사람인] 페이지 이동 실패: {e}")
-            return []
-
-        try:
+            await self._goto_safe(url)
+            await asyncio.sleep(4)  # JS가 결과를 채울 시간
             html = await self.page.content()
         except Exception as e:
-            print(f"[사람인] 콘텐츠 추출 실패: {e}")
+            print(f"[사람인] 검색페이지 접속 실패: {e}")
             return []
 
         jobs = self._parse_html(html, user_profile)
+        for j in jobs:
+            j["match_type"] = "keyword"
+            j["_matched_keyword"] = keyword
+
         print(f"[사람인] {len(jobs)}개 파싱 완료")
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
         return jobs
 
     def _parse_html(self, html: str, user_profile: dict) -> list[dict]:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
-        jobs = []
 
-        items = soup.select(".list_item")
-        print(f"[사람인] 아이템 {len(items)}개 발견")
+        items = [li for li in soup.select("li") if li.select_one("h2.job_tit")]
+
+        if not items:
+            print(f"[사람인][디버그] 공고 항목 0개 -- HTML 응답 길이: {len(html)}자 "
+                  f"(page.content() 시점에 아직 렌더링 안 됐거나 셀렉터 재확인 필요)")
+            return []
+
+        jobs = []
+        debug_count = 0
 
         for item in items:
             try:
-                # 제목
-                title_tag = item.select_one(".job_tit .str_tit")
+                title_tag = item.select_one("h2.job_tit a")
                 if not title_tag:
                     continue
-                title = title_tag.get_text(strip=True)
+                title = title_tag.get("title", "") or title_tag.get_text(strip=True)
                 if not title:
                     continue
 
-                # URL + rec_idx
                 href = title_tag.get("href", "")
-                rec_idx_match = re.search(r"rec_idx=(\d+)", href)
-                rec_idx = rec_idx_match.group(1) if rec_idx_match else None
-                source_url = f"{BASE_URL}{href}" if href.startswith("/") else href
+                m = JOB_LINK_PATTERN.search(href)
+                rec_idx = m.group(1) if m else None
+                source_url = href if href.startswith("http") else f"{BASE_URL}{href}" if href else ""
 
-                # 회사명
-                company_tag = item.select_one(".company_nm .str_tit")
-                company = company_tag.get_text(strip=True) if company_tag else ""
+                corp_tag = item.select_one("span.corp_name a")
+                company = ""
+                if corp_tag:
+                    company = corp_tag.get("title", "") or corp_tag.get_text(strip=True)
 
-                # 마감일
-                deadline_tag = item.select_one(".job_date .date") or item.select_one(".date")
-                deadline_raw = deadline_tag.get_text(strip=True) if deadline_tag else ""
+                condition_div = item.select_one("div.job_condition")
+                location = ""
+                if condition_div:
+                    region_links = condition_div.select("a")
+                    location = " ".join(a.get_text(strip=True) for a in region_links[:2])
 
-                if title:
-                    jobs.append({
-                        "title": title,
-                        "company": company,
-                        "category": user_profile.get("category", ""),
-                        "employment_type": user_profile.get("employment_type", "인턴"),
-                        "location": user_profile.get("location", "서울"),
-                        "deadline": self._parse_deadline(deadline_raw),
-                        "source": "사람인",
-                        "source_url": source_url,
-                        "rating": None,
-                        "competition_ratio": None,
-                        "_raw": {"rec_idx": rec_idx, "deadline_raw": deadline_raw}
-                    })
+                date_tag = item.select_one("div.job_date span.date")
+                deadline_raw = date_tag.get_text(strip=True) if date_tag else ""
+                deadline = self._parse_deadline(deadline_raw)
+
+                if debug_count < 3:
+                    print(f"[사람인][디버그] '{title[:20]}' / {company} / {location} / "
+                          f"마감원문:'{deadline_raw}' -> {deadline} / url:{source_url[:60]}")
+                    debug_count += 1
+
+                jobs.append({
+                    "title": title,
+                    "company": company,
+                    "category": "",
+                    "employment_type": "",
+                    "location": location,
+                    "deadline": deadline,
+                    "source": "사람인",
+                    "source_url": source_url,
+                    "rating": None, "competition_ratio": None,
+                    "_raw": {"rec_idx": rec_idx, "deadline_raw": deadline_raw},
+                })
             except Exception as e:
-                print(f"[사람인] 파싱 오류: {e}")
+                print(f"[사람인] 항목 파싱 오류: {e}")
+
+        print(f"[사람인][디버그] 파싱된 공고 {len(jobs)}개 (제목 샘플): "
+              f"{[j['title'][:30] for j in jobs[:10]]}")
 
         return jobs
 
     def _parse_deadline(self, raw: str) -> Optional[str]:
-        today = datetime.now()
         if not raw:
             return None
+        today = datetime.now()
         if "상시" in raw or "채용시" in raw:
             return None
-        m = re.search(r"(\d{2})[\./](\d{2})", raw)
+        if "모레" in raw:
+            return (today + timedelta(days=2)).strftime("%Y-%m-%d")
+        if "내일" in raw:
+            return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        if "오늘" in raw:
+            return today.strftime("%Y-%m-%d")
+        m = re.search(r"(\d{1,2})\s*[./]\s*(\d{1,2})", raw)
         if m:
             month, day = int(m.group(1)), int(m.group(2))
             year = today.year if month >= today.month else today.year + 1
