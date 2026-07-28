@@ -117,19 +117,30 @@ class WantedAdapter(BaseAdapter):
                     continue
                 seen_urls.add(source_url)
 
-                btn = card.select_one("button[data-position-name]")
-                if btn:
-                    title = btn.get("data-position-name", "")
-                    company = btn.get("data-company-name", "")
-                    emp_type_raw = btn.get("data-position-employment-type", "")
-                    emp_type = EMPLOYMENT_TYPE_MAP.get(emp_type_raw, emp_type_raw)
-                else:
-                    title_tag = card.select_one("[class*='position']")
-                    company_tag = card.select_one("[class*='company']")
-                    title = title_tag.get_text(strip=True) if title_tag else ""
-                    company = company_tag.get_text(strip=True) if company_tag else ""
-                    emp_type_raw = ""
-                    emp_type = ""
+                # 실제 DevTools로 확인한 구조: /search?query= 페이지에서는
+                # <a> 태그 자체에 data-position-name/data-company-name이
+                # 바로 붙어있음 (예전엔 안쪽 button[data-position-name]을
+                # 찾는 방식이었는데, 이건 wdlist 페이지 구조라 검색결과
+                # 페이지에서는 안 먹혀서 전부 빈 값으로 스킵되고 있었음).
+                title = card.get("data-position-name", "")
+                company = card.get("data-company-name", "")
+                emp_type_raw = card.get("data-position-employment-type", "")
+                emp_type = EMPLOYMENT_TYPE_MAP.get(emp_type_raw, emp_type_raw)
+
+                if not title or not company:
+                    # 폴백: 혹시 다른 페이지 변형에서 안쪽 button/class 구조를
+                    # 쓰는 경우 대비
+                    btn = card.select_one("button[data-position-name]")
+                    if btn:
+                        title = title or btn.get("data-position-name", "")
+                        company = company or btn.get("data-company-name", "")
+                        emp_type_raw = emp_type_raw or btn.get("data-position-employment-type", "")
+                        emp_type = EMPLOYMENT_TYPE_MAP.get(emp_type_raw, emp_type_raw)
+                    else:
+                        title_tag = card.select_one("[class*='position']")
+                        company_tag = card.select_one("[class*='company']")
+                        title = title or (title_tag.get_text(strip=True) if title_tag else "")
+                        company = company or (company_tag.get_text(strip=True) if company_tag else "")
 
                 location_tag = card.select_one("[class*='location']")
                 location_text = location_tag.get_text(strip=True) if location_tag else ""

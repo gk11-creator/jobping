@@ -1,4 +1,4 @@
-"""
+﻿"""
 링커리어 어댑터
 
 [검색 전략 변경 - 검색 최우선]
@@ -7,18 +7,40 @@
 "IT기획/PM"[114] 요청에 마케팅/그로스/영업 성격의 공고를 반환하는 등
 카테고리 코드 자체의 신뢰도가 낮은 것이 확인되어, 이제 순서를 뒤집는다:
 
-1) 사용자의 관심 산업(industries) + 카테고리 키워드를 조합한 자유 검색
-   (SEARCH_QUERY_HASH)을 항상 먼저 시도한다 (예: "IT 영업").
+1) 사용자의 관심 산업(industries) + 카테고리 키워드를 조합한 자유 검색을
+   항상 먼저 시도한다 (예: "IT 영업").
 2) 검색 결과가 너무 적으면(5개 미만) categoryIDs 정밀 필터(CATEGORY_QUERY_HASH)
    결과로 보충한다 -- 완전히 버리진 않되 보조 수단으로만 사용.
 
+검색은 GraphQL persistedQuery 해시 추측 방식이 항상 0개를 반환하는 것이
+확인되어(조현용 "IT 영업" 케이스), 실제 검색 결과 페이지(/search?q=...)를
+직접 스크래핑하는 방식으로 교체했다. DevTools로 확인한 실제 구조:
+
+    <div data-activityid="333202" class="large ActivityListItem-ua...">
+      <div>...<img alt="[신원] 수출부문 KNIT 해외영업... 경력 채용" .../></div>
+      <div>
+        <a class="link" href="/activity/333202">
+          <p class="title">"[신원] 수출부문 KN" <b class="highlight">IT</b> " 해외"
+            <b class="highlight">영업</b> "(Old Navy/Active) 경력 채용"</p>
+        </a>
+        <p class="short-info-typo">경력직</p>
+        <p class="category">영업/CS</p>
+        <p class="short-info-typo">~ 07.31</p>
+      </div>
+    </div>
+
+제목은 검색어가 <b class="highlight">로 하이라이트되어 조각나 있지만,
+get_text()로 이어붙이면 원래 문장이 복원된다. href가 실제 상세페이지
+경로를 바로 제공하므로 activity_id 추정이 필요 없다.
+
 검색 결과는 match_type="keyword"로 태깅되어 사전필터(prefilter_by_category)의
-제목 관련성 검증을 반드시 거치고, categoryIDs 보충 결과는 기존처럼
-match_type="category"로 남긴다 (검증 없이도 신뢰할 만한 결과라기보단, 검색
-결과가 부족할 때의 차선책이라는 의미).
+제목 관련성 검증을 반드시 거치고, categoryIDs 보충 결과도 동일하게 검증받도록
+_matched_keyword를 붙인다.
 """
 import asyncio
 import json
+import re
+import urllib.parse
 from datetime import datetime
 from typing import Optional
 from adapters.base_adapter import BaseAdapter
@@ -47,10 +69,11 @@ BASE_URL = "https://linkareer.com"
 GRAPHQL_URL = "https://api.linkareer.com/graphql"
 
 CATEGORY_QUERY_HASH = "f674e1f77d004204d63b94f4b8bb49fd91138ee4cce1c62c1096876d49f201a2"
-SEARCH_QUERY_HASH = "766eb8eb6e4365ccb326a8168ad86dffaa86a1b138dcd2450faa3c3af883a0e6"
 
 RECRUIT_ACTIVITY_TYPE_ID = 5
-MIN_SEARCH_RESULTS = 5  # 이보다 적으면 categoryIDs로 보충 시도
+MIN_SEARCH_RESULTS = 5
+
+DEADLINE_PATTERN = re.compile(r"~?\s*(\d{1,2})\s*\.\s*(\d{1,2})|상시|마감|D-\d+")
 
 
 class LinkareerAdapter(BaseAdapter):
@@ -105,24 +128,106 @@ class LinkareerAdapter(BaseAdapter):
 
         return await self._fetch_with_retry(_call)
 
+    def _parse_deadline_text(self, raw: str):
+        if not raw:
+            return None
+        if "상시" in raw:
+            return None
+        today = datetime.now()
+        m = re.search(r"(\d{1,2})\s*\.\s*(\d{1,2})", raw)
+        if m:
+            month, day = int(m.group(1)), int(m.group(2))
+            year = today.year if month >= today.month else today.year + 1
+            return f"{year}-{month:02d}-{day:02d}"
+        m2 = re.search(r"D-(\d+)", raw)
+        if m2:
+            from datetime import timedelta
+            return (today + timedelta(days=int(m2.group(1)))).strftime("%Y-%m-%d")
+        return None
+
     async def _fetch_by_keyword(self, keyword: str, page: int, user_profile: dict) -> list[dict]:
-        search_variables = {
-            "filterBy": {
-                "query": keyword,
-                "isClosed": False,
-                "activityTypeID": RECRUIT_ACTIVITY_TYPE_ID,
-            },
-            "page": page,
-            "pageSize": 20,
-            "activityOrder": {"field": "RELEVANCE", "direction": "DESC"},
-        }
-        response_data = await self._graphql_call(
-            "gqlActivitySearchResult", SEARCH_QUERY_HASH, search_variables
-        )
-        if not response_data:
+        encoded = urllib.parse.quote(keyword)
+        url = f"{BASE_URL}/search?q={encoded}&page={page}"
+        print(f"[링커리어][디버그] 검색페이지 접속: {url}")
+
+        try:
+            await self._goto_safe(url)
+            await asyncio.sleep(3)
+            html = await self.page.content()
+        except Exception as e:
+            print(f"[링커리어] 검색페이지 접속 실패: {e}")
             return []
-        nodes = response_data.get("data", {}).get("activitySearch", {}).get("nodes", [])
-        return [self._normalize_search(node, user_profile, keyword) for node in nodes]
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+
+        items = soup.select("div[data-activityid]")
+        seen_ids = set()
+        jobs = []
+        debug_count = 0
+
+        for item in items:
+            activity_id = item.get("data-activityid", "")
+            if not activity_id or activity_id in seen_ids:
+                continue
+            seen_ids.add(activity_id)
+
+            title_tag = item.select_one("p.title")
+            if title_tag:
+                full_title = title_tag.get_text(strip=True)
+                anchor = item.select_one('a[href^="/activity/"]')
+                href = anchor.get("href", "") if anchor else f"/activity/{activity_id}"
+            else:
+                img = item.find("img", alt=True)
+                full_title = img.get("alt", "").strip() if img else ""
+                href = f"/activity/{activity_id}"
+
+            if not full_title:
+                continue
+
+            m = re.match(r"^\[([^\]]+)\]\s*(.*)", full_title)
+            if m:
+                company = m.group(1)
+                title = m.group(2) or full_title
+            else:
+                company = ""
+                title = full_title
+
+            source_url = href if href.startswith("http") else f"{BASE_URL}{href}"
+
+            category_tag = item.select_one("p.category")
+            category_text = category_tag.get_text(strip=True) if category_tag else ""
+
+            deadline_raw = ""
+            for p in item.select("p.short-info-typo"):
+                t = p.get_text(strip=True)
+                if DEADLINE_PATTERN.search(t):
+                    deadline_raw = t
+                    break
+            deadline = self._parse_deadline_text(deadline_raw)
+
+            if debug_count < 3:
+                print(f"[링커리어][디버그] activityid={activity_id} / 제목:'{title[:30]}' / "
+                      f"회사:'{company}' / 실제카테고리:'{category_text}' / 마감:'{deadline_raw}'->{deadline}")
+                debug_count += 1
+
+            jobs.append({
+                "title": title,
+                "company": company,
+                "category": user_profile.get("category", ""),
+                "employment_type": "",
+                "location": "",
+                "deadline": deadline,
+                "source": "링커리어",
+                "source_url": source_url,
+                "rating": None, "competition_ratio": None,
+                "match_type": "keyword",
+                "_matched_keyword": keyword,
+                "_raw": {"id": activity_id, "site_category": category_text},
+            })
+
+        print(f"[링커리어][디버그] 검색페이지 파싱 결과 {len(jobs)}개")
+        return jobs
 
     async def _fetch_by_category(self, user_profile: dict, page: int, category_ids: list) -> list[dict]:
         variables = self._build_category_variables(user_profile, page, category_ids)
@@ -156,10 +261,6 @@ class LinkareerAdapter(BaseAdapter):
                         continue
                     bid = bj.get("_raw", {}).get("id")
                     if bid not in existing_ids:
-                        # 보충 결과도 검색 결과와 동일하게 제목 관련성 검증을
-                        # 받도록 키워드를 붙인다 (categoryIDs 필터가 정밀하다는
-                        # 보장이 없다는 것이 이미 여러 번 확인됐으므로, 검증
-                        # 없이 그냥 통과시키지 않는다).
                         bj["_matched_keyword"] = keyword
                         jobs.append(bj)
                         existing_ids.add(bid)
@@ -168,7 +269,7 @@ class LinkareerAdapter(BaseAdapter):
         await self._delay()
         return jobs
 
-    def _normalize(self, node: dict, user_profile: dict) -> Optional[dict]:
+    def _normalize(self, node: dict, user_profile: dict):
         """카테고리 목록(RecruitList) 응답 파싱 -- 결과 부족시 보충용"""
         try:
             activity_id = node.get("id", "")
@@ -204,51 +305,6 @@ class LinkareerAdapter(BaseAdapter):
             }
         except Exception as e:
             print(f"[링커리어] 파싱 오류: {e}")
-            return None
-
-    def _normalize_search(self, node: dict, user_profile: dict, matched_keyword: str) -> Optional[dict]:
-        """
-        키워드 검색(gqlActivitySearchResult) 응답 파싱 -- 이제 기본 경로.
-        RecruitList와 달리 실제 공고 데이터가 node["source"] 안에 한 겹 더 감싸져 있음.
-        """
-        try:
-            source = node.get("source", {})
-            activity_id = source.get("id", "")
-            close_at_ms = source.get("recruitCloseAt")
-            deadline = datetime.fromtimestamp(close_at_ms / 1000).strftime("%Y-%m-%d") if close_at_ms else None
-
-            region_districts = source.get("regionDistricts", [])
-            regions = source.get("regions", [])
-            if region_districts:
-                location = ", ".join(rd.get("name", "") for rd in region_districts[:2])
-            elif regions:
-                location = ", ".join(r.get("name", "") for r in regions[:2])
-            else:
-                location = ""
-
-            job_types = source.get("jobTypes", [])
-            recruit_infos = source.get("recruitInformations", [])
-            emp_type = self._parse_emp_type(job_types, recruit_infos)
-
-            return {
-                "title": source.get("title", ""),
-                "company": source.get("organizationName", ""),
-                "category": user_profile.get("category", ""),
-                "employment_type": emp_type,
-                "location": location, "deadline": deadline,
-                "source": "링커리어",
-                "source_url": f"{BASE_URL}/activity/{activity_id}",
-                "rating": None, "competition_ratio": None,
-                "match_type": "keyword",
-                "_matched_keyword": matched_keyword,
-                "_raw": {
-                    "id": activity_id, "job_types": job_types,
-                    "scrap_count": source.get("scrapCount", 0),
-                    "score": node.get("score"),
-                }
-            }
-        except Exception as e:
-            print(f"[링커리어] 검색결과 파싱 오류: {e}")
             return None
 
     def _parse_emp_type(self, job_types: list, recruit_infos: list) -> str:

@@ -79,7 +79,17 @@ class SaraminAdapter(BaseAdapter):
 
         try:
             await self._goto_safe(url)
-            await asyncio.sleep(4)
+            # 고정 4초 대기 대신 실제 공고 항목(h2.job_tit)이 DOM에 나타날
+            # 때까지 최대 10초 기다린다. 검색 결과 건수가 많을수록(예:
+            # "IT 영업" 8천여 건 vs "가구디자인" 소량) 렌더링 시간이 달라져서
+            # 고정 대기로는 결과가 많은 검색어에서 항목이 채워지기 전에
+            # 읽어버려 0개로 나오는 문제가 있었다.
+            try:
+                await self.page.wait_for_selector("h2.job_tit", timeout=10000)
+            except Exception:
+                print("[사람인][디버그] h2.job_tit 10초 대기 후에도 안 나타남 -- "
+                      "빈 결과이거나 셀렉터/차단 문제일 수 있음")
+            await asyncio.sleep(1)  # 추가 항목들 마저 로드될 여유
             html = await self.page.content()
         except Exception as e:
             print(f"[사람인] 검색페이지 접속 실패: {e}")
@@ -98,7 +108,12 @@ class SaraminAdapter(BaseAdapter):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
 
-        items = [li for li in soup.select("li") if li.select_one("h2.job_tit")]
+        # 실제 구조 확인 결과: 공고 항목은 <li>가 아니라
+        # <div class="item_recruit" value="54360251" ...> 형태였다.
+        # 예전 코드가 무조건 <li> 태그만 뒤져서 h2.job_tit를 찾았는데,
+        # h2.job_tit 자체는 페이지에 존재해도 <li> 안에 없어서 항상 0개로
+        # 나온 것 -- 대기시간 문제가 아니라 셀렉터 자체가 잘못됐던 것.
+        items = soup.select("div.item_recruit")
 
         if not items:
             print(f"[사람인][디버그] 공고 항목 0개 -- HTML 응답 길이: {len(html)}자 "
@@ -122,10 +137,27 @@ class SaraminAdapter(BaseAdapter):
                 rec_idx = m.group(1) if m else None
                 source_url = href if href.startswith("http") else f"{BASE_URL}{href}" if href else ""
 
-                corp_tag = item.select_one("span.corp_name a")
+                corp_tag = item.select_one("div.area_corp")
                 company = ""
                 if corp_tag:
-                    company = corp_tag.get("title", "") or corp_tag.get_text(strip=True)
+                    # area_corp 안에는 회사명 외에 "관심기업 등록", "기업정보",
+                    # "공고 모아보기" 같은 UI 버튼 텍스트가 같이 들어있어서
+                    # get_text()로 통째로 가져오면 다 붙어버린다. 실제 회사명은
+                    # 보통 링크(<a>) 텍스트나 첫 번째 텍스트 노드이므로, 그
+                    # 안의 링크 텍스트를 우선 시도하고, 없으면 알려진 버튼
+                    # 문구들을 잘라낸다.
+                    name_link = corp_tag.select_one("a")
+                    if name_link:
+                        company = name_link.get_text(strip=True)
+                    else:
+                        raw_company = corp_tag.get_text(strip=True)
+                        for noise in ["관심기업 등록", "기업정보", "공고 모아보기", "+"]:
+                            raw_company = raw_company.replace(noise, "")
+                        company = raw_company.strip()
+                if not company:
+                    corp_tag_fallback = item.select_one("span.corp_name a")
+                    if corp_tag_fallback:
+                        company = corp_tag_fallback.get("title", "") or corp_tag_fallback.get_text(strip=True)
 
                 condition_div = item.select_one("div.job_condition")
                 location = ""
