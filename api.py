@@ -87,11 +87,30 @@ async def track_click(
         "url": url,
         "deadline": deadline,
     })
-    return RedirectResponse(
-    url=url,
-    status_code=302,
-    # headers={"Referrer-Policy": "no-referrer"},  # 일단 제거하고 테스트
-)
+
+    # 자동 리다이렉트(302, meta refresh 0초)는 크롬의 "Bounce Tracking
+    # Mitigation"에 걸려 중간 경유지를 거친 최종 목적지 사이트가 정상
+    # 세션 없이 취급되는 것으로 추정됨 (조회수/사이드바 위젯이 빈 채로
+    # 뜨는 스켈레톤 증상). 사용자가 실제로 버튼을 눌러야만 이동하도록
+    # 자동 이동을 완전히 제거하고 진짜 클릭 네비게이션으로 바꾼다.
+    safe_url = html.escape(url, quote=True)
+    redirect_html = f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>공고 페이지로 이동</title>
+</head>
+<body style="font-family:-apple-system,sans-serif;text-align:center;padding:80px 20px;color:#374151;">
+  <p style="font-size:16px;margin-bottom:20px;">공고 페이지를 확인하려면 아래 버튼을 눌러주세요.</p>
+  <a href="{safe_url}"
+     style="display:inline-block;padding:14px 32px;background:#2563eb;color:#fff;
+            border-radius:8px;font-size:15px;font-weight:600;text-decoration:none;">
+    🔗 공고 페이지 보기
+  </a>
+</body>
+</html>"""
+    return HTMLResponse(content=redirect_html)
 
 # ─────────────────────────────────────────
 # 공고 저장
